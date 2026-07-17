@@ -83,6 +83,116 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(result.malformedRowCount, 0)
     }
 
+    func testIdentityGroupsHelpersUnderOwningBundle() {
+        let provider = FakeProcessMetadataProvider(entries: [
+            100: ProcessMetadata(
+                processID: 100,
+                processName: "Chrome Helper",
+                bundleIdentifier: nil,
+                executablePath: "/Applications/Google Chrome.app/Contents/Frameworks/Helper",
+                parentProcessID: 10
+            ),
+            10: ProcessMetadata(
+                processID: 10,
+                processName: "Google Chrome",
+                bundleIdentifier: "com.google.Chrome",
+                bundleURL: URL(fileURLWithPath: "/Applications/Google Chrome.app"),
+                executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            )
+        ])
+        let resolver = ApplicationIdentityResolver(provider: provider)
+        let counters = [
+            ProcessTrafficCounter(
+                identity: ApplicationIdentity(id: "helper", displayName: "Chrome Helper", bundleIdentifier: nil, executablePath: nil),
+                processID: 100,
+                processStartToken: 1,
+                download: 40,
+                upload: 10
+            ),
+            ProcessTrafficCounter(
+                identity: ApplicationIdentity(id: "chrome", displayName: "Google Chrome", bundleIdentifier: nil, executablePath: nil),
+                processID: 10,
+                processStartToken: 1,
+                download: 100,
+                upload: 20
+            )
+        ]
+
+        let summaries = resolver.group(counters: counters)
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertEqual(summaries[0].identity.bundleIdentifier, "com.google.Chrome")
+        XCTAssertEqual(summaries[0].download, 140)
+        XCTAssertEqual(summaries[0].upload, 30)
+        XCTAssertEqual(summaries[0].processes.count, 2)
+    }
+
+    func testIdentityKeepsCommandLineToolsSeparateByPath() {
+        let provider = FakeProcessMetadataProvider(entries: [
+            20: ProcessMetadata(
+                processID: 20,
+                processName: "curl",
+                executablePath: "/usr/bin/curl"
+            ),
+            21: ProcessMetadata(
+                processID: 21,
+                processName: "curl",
+                executablePath: "/opt/homebrew/bin/curl"
+            )
+        ])
+        let resolver = ApplicationIdentityResolver(provider: provider)
+        let counters = [
+            ProcessTrafficCounter(
+                identity: ApplicationIdentity(id: "a", displayName: "curl", bundleIdentifier: nil, executablePath: nil),
+                processID: 20,
+                processStartToken: 1,
+                download: 5,
+                upload: 1
+            ),
+            ProcessTrafficCounter(
+                identity: ApplicationIdentity(id: "b", displayName: "curl", bundleIdentifier: nil, executablePath: nil),
+                processID: 21,
+                processStartToken: 1,
+                download: 7,
+                upload: 2
+            )
+        ]
+
+        let summaries = resolver.group(counters: counters)
+        XCTAssertEqual(summaries.count, 2)
+        XCTAssertEqual(Set(summaries.map { $0.identity.executablePath }), [
+            "/usr/bin/curl",
+            "/opt/homebrew/bin/curl"
+        ])
+    }
+
+    func testIdentitySearchMatchesNameBundleAndProcess() {
+        let summary = ApplicationTrafficSummary(
+            identity: ApplicationIdentity(
+                id: "bundle:com.openai.chat",
+                displayName: "ChatGPT",
+                bundleIdentifier: "com.openai.chat",
+                executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
+            ),
+            download: 10,
+            upload: 2,
+            peakBytesPerSecond: 12,
+            processes: [
+                ProcessTrafficSummary(
+                    processID: 55,
+                    processName: "ChatGPT Helper",
+                    download: 4,
+                    upload: 1,
+                    peakBytesPerSecond: 5
+                )
+            ]
+        )
+
+        XCTAssertTrue(ApplicationIdentityResolver.matches(summary, search: "chat"))
+        XCTAssertTrue(ApplicationIdentityResolver.matches(summary, search: "openai"))
+        XCTAssertTrue(ApplicationIdentityResolver.matches(summary, search: "Helper"))
+        XCTAssertFalse(ApplicationIdentityResolver.matches(summary, search: "chrome"))
+    }
+
     private func counter(
         startToken: UInt64,
         download: UInt64,
@@ -95,5 +205,16 @@ final class NetAnalyticsTests: XCTestCase {
             download: download,
             upload: upload
         )
+    }
+}
+
+private struct FakeProcessMetadataProvider: ProcessMetadataProviding {
+    let entries: [Int32: ProcessMetadata]
+
+    func metadata(for processID: Int32, fallbackName: String) -> ProcessMetadata {
+        if let entry = self.entries[processID] {
+            return entry
+        }
+        return ProcessMetadata(processID: processID, processName: fallbackName)
     }
 }

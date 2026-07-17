@@ -137,6 +137,20 @@ public struct ProcessTrafficSummary: Codable, Equatable {
     public let download: UInt64
     public let upload: UInt64
     public let peakBytesPerSecond: UInt64
+
+    public init(
+        processID: Int32,
+        processName: String,
+        download: UInt64,
+        upload: UInt64,
+        peakBytesPerSecond: UInt64
+    ) {
+        self.processID = processID
+        self.processName = processName
+        self.download = download
+        self.upload = upload
+        self.peakBytesPerSecond = peakBytesPerSecond
+    }
 }
 
 public struct ApplicationTrafficSummary: Codable, Equatable {
@@ -147,4 +161,18 @@ public struct ApplicationTrafficSummary: Codable, Equatable {
     public let processes: [ProcessTrafficSummary]
 
     public var total: UInt64 { self.download + self.upload }
+
+    public init(
+        identity: ApplicationIdentity,
+        download: UInt64,
+        upload: UInt64,
+        peakBytesPerSecond: UInt64,
+        processes: [ProcessTrafficSummary]
+    ) {
+        self.identity = identity
+        self.download = download
+        self.upload = upload
+        self.peakBytesPerSecond = peakBytesPerSecond
+        self.processes = processes
+    }
 }
