@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000010000000000000008 /* models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000006 /* models.swift */; };
+		A10000010000000000000009 /* deltas.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000007 /* deltas.swift */; };
+		A10000010000000000000003 /* NetAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000004 /* NetAnalytics.swift */; };
 		A10000010000000000000001 /* UserContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000002 /* UserContext.swift */; };
 		4A05F9BD83C04F70BFFF7F37 /* Kit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 369463B2B7EA4AF0A895A9B6 /* Kit.swift */; };
 		5C038CF62D86EE8A00516809 /* SystemStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C038CF52D86EE8700516809 /* SystemStats.swift */; };
@@ -532,6 +535,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A10000010000000000000006 /* models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = models.swift; sourceTree = "<group>"; };
+		A10000010000000000000007 /* deltas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = deltas.swift; sourceTree = "<group>"; };
+		A10000010000000000000004 /* NetAnalytics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetAnalytics.swift; sourceTree = "<group>"; };
 		A10000010000000000000002 /* UserContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserContext.swift; sourceTree = "<group>"; };
 		0192A7ED2B017E190056F918 /* hi */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = hi; path = hi.lproj/Localizable.strings; sourceTree = "<group>"; };
 		13BE56042D0E6963001C58EC /* en-AU */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "en-AU"; path = "en-AU.lproj/Localizable.strings"; sourceTree = "<group>"; };
@@ -1163,6 +1169,7 @@
 		9A3E17CD247A94AF00449CD1 /* Net */ = {
 			isa = PBXGroup;
 			children = (
+				A10000010000000000000005 /* analytics */,
 				9A3E17D8247A94B500449CD1 /* main.swift */,
 				9A3E17DA247A94BC00449CD1 /* readers.swift */,
 				9A3E17E9247B07BF00449CD1 /* popup.swift */,
@@ -1175,6 +1182,15 @@
 				9A3E17DC247A94C300449CD1 /* config.plist */,
 			);
 			path = Net;
+			sourceTree = "<group>";
+		};
+		A10000010000000000000005 /* analytics */ = {
+			isa = PBXGroup;
+			children = (
+				A10000010000000000000006 /* models.swift */,
+				A10000010000000000000007 /* deltas.swift */,
+			);
+			path = analytics;
 			sourceTree = "<group>";
 		};
 		9A46BF1E266D6DD0001A1117 /* scripts */ = {
@@ -1303,6 +1319,7 @@
 				9AAC5E2E280ACC120043D892 /* Info.plist */,
 				9AAC5E40280ACC210043D892 /* RAM.swift */,
 				369463B2B7EA4AF0A895A9B6 /* Kit.swift */,
+				A10000010000000000000004 /* NetAnalytics.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -2280,6 +2297,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000010000000000000008 /* models.swift in Sources */,
+				A10000010000000000000009 /* deltas.swift in Sources */,
 				9A3E17DB247A94BC00449CD1 /* readers.swift in Sources */,
 				9A3E17EA247B07BF00449CD1 /* popup.swift in Sources */,
 				5C50DB402FAF4CBE008BACB6 /* preview.swift in Sources */,
@@ -2343,6 +2362,7 @@
 			files = (
 				9AAC5E41280ACC210043D892 /* RAM.swift in Sources */,
 				4A05F9BD83C04F70BFFF7F37 /* Kit.swift in Sources */,
+				A10000010000000000000003 /* NetAnalytics.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
