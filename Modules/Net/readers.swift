@@ -711,6 +711,8 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
 public class ProcessReader: Reader<[Network_Process]> {
     private let title: String = "Network"
     private var previous: [Network_Process] = []
+    public var analyticsIngest: (([ProcessTrafficCounter]) -> Void)?
+    public var analyticsFailure: ((String) -> Void)?
     
     private var numberOfProcesses: Int {
         get {
@@ -723,10 +725,6 @@ public class ProcessReader: Reader<[Network_Process]> {
     }
     
     public override func read() {
-        if self.numberOfProcesses == 0 {
-            return
-        }
-        
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
         task.arguments = ["-P", "-L", "1", "-n", "-k", "time,interface,state,rx_dupe,rx_ooo,re-tx,rtt_avg,rcvsize,tx_win,tc_class,tc_mgt,cc_algo,P,C,R,W,arch"]
@@ -757,6 +755,7 @@ public class ProcessReader: Reader<[Network_Process]> {
             try task.run()
         } catch let error {
             print(error)
+            self.analyticsFailure?(error.localizedDescription)
             return
         }
         
@@ -764,10 +763,14 @@ public class ProcessReader: Reader<[Network_Process]> {
         let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: outputData, encoding: .utf8)
         _ = String(data: errorData, encoding: .utf8)
-        guard let output, !output.isEmpty else { return }
+        guard let output, !output.isEmpty else {
+            self.analyticsFailure?("empty nettop output")
+            return
+        }
 
         let parsed = NettopSnapshotParser.parse(csv: output)
         var list: [Network_Process] = []
+        var counters: [ProcessTrafficCounter] = []
         for row in parsed.rows {
             var process = Network_Process()
             process.time = Date()
@@ -783,6 +786,29 @@ public class ProcessReader: Reader<[Network_Process]> {
             process.download = Int(clamping: row.download)
             process.upload = Int(clamping: row.upload)
             list.append(process)
+
+            counters.append(
+                ProcessTrafficCounter(
+                    identity: ApplicationIdentity(
+                        id: "pid:\(row.processID)",
+                        displayName: process.name,
+                        bundleIdentifier: nil,
+                        executablePath: nil
+                    ),
+                    processID: row.processID,
+                    processStartToken: UInt64(row.processID),
+                    download: row.download,
+                    upload: row.upload
+                )
+            )
+        }
+
+        // Continuous analytics collection remains active even when the popup
+        // process table is configured to show zero rows.
+        self.analyticsIngest?(counters)
+
+        if self.numberOfProcesses == 0 {
+            return
         }
         
         var processes: [Network_Process] = []

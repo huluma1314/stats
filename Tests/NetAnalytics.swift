@@ -334,6 +334,74 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertNotNil(forecast.projectedBytes)
     }
 
+    func testCoordinatorBaselinesThenWritesDeltas() {
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let provider = FakeProcessMetadataProvider(entries: [
+            42: ProcessMetadata(
+                processID: 42,
+                processName: "Example",
+                bundleIdentifier: "com.example.client",
+                executablePath: "/Applications/Example.app/Contents/MacOS/Example"
+            )
+        ])
+        let coordinator = TrafficAnalyticsCoordinator(
+            repository: repository,
+            resolver: ApplicationIdentityResolver(provider: provider)
+        )
+        coordinator.start()
+        coordinator.updateNetwork(
+            NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        )
+
+        let first = ProcessTrafficCounter(
+            identity: ApplicationIdentity(id: "x", displayName: "Example", bundleIdentifier: nil, executablePath: nil),
+            processID: 42,
+            processStartToken: 1,
+            download: 100,
+            upload: 20
+        )
+        coordinator.ingest(counters: [first])
+        XCTAssertEqual(coordinator.snapshot().samplesWritten, 0)
+
+        let second = ProcessTrafficCounter(
+            identity: ApplicationIdentity(id: "x", displayName: "Example", bundleIdentifier: nil, executablePath: nil),
+            processID: 42,
+            processStartToken: 1,
+            download: 150,
+            upload: 30
+        )
+        coordinator.ingest(counters: [second])
+        XCTAssertEqual(coordinator.snapshot().samplesWritten, 1)
+
+        let samples = repository.fetch(
+            TrafficHistoryQuery(
+                level: .second,
+                start: Date().addingTimeInterval(-60),
+                end: Date().addingTimeInterval(60)
+            )
+        )
+        XCTAssertEqual(samples.count, 1)
+        XCTAssertEqual(samples[0].delta.download, 50)
+        XCTAssertEqual(samples[0].delta.upload, 10)
+        XCTAssertEqual(samples[0].application.bundleIdentifier, "com.example.client")
+    }
+
+    func testCoordinatorIgnoresIngestWhileStopped() {
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let coordinator = TrafficAnalyticsCoordinator(repository: repository)
+        let counter = ProcessTrafficCounter(
+            identity: ApplicationIdentity(id: "x", displayName: "Example", bundleIdentifier: nil, executablePath: nil),
+            processID: 1,
+            processStartToken: 1,
+            download: 10,
+            upload: 1
+        )
+        coordinator.ingest(counters: [counter])
+        XCTAssertFalse(coordinator.snapshot().isCollecting)
+        XCTAssertEqual(coordinator.snapshot().samplesWritten, 0)
+    }
+
     func testRetentionCompactionPromotesSecondsToMinutes() {
         let store = InMemoryTrafficStore()
         let repository = TrafficHistoryRepository(store: store)

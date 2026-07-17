@@ -148,6 +148,9 @@ public class Network: Module {
     private var usageReader: UsageReader? = nil
     private var processReader: ProcessReader? = nil
     private var connectivityReader: ConnectivityReader? = nil
+    private let analyticsCoordinator = TrafficAnalyticsCoordinator(
+        repository: TrafficHistoryRepository(store: LevelDBTrafficStore())
+    )
     
     private let ipUpdater = NSBackgroundActivityScheduler(identifier: "eu.exelban.Stats.Network.IP")
     
@@ -196,9 +199,16 @@ public class Network: Module {
                 self?.popupView.processCallback(list)
             }
         }
+        self.processReader?.analyticsIngest = { [weak self] counters in
+            self?.analyticsCoordinator.ingest(counters: counters)
+        }
+        self.processReader?.analyticsFailure = { [weak self] message in
+            self?.analyticsCoordinator.recordFailure(message)
+        }
         self.connectivityReader = ConnectivityReader(.network) { [weak self] value in
             self?.connectivityCallback(value)
         }
+        self.analyticsCoordinator.start()
         
         self.settingsView.callbackWhenUpdateNumberOfProcesses = { [weak self] in
             guard let self else { return }
@@ -246,6 +256,8 @@ public class Network: Module {
     
     private func usageCallback(_ raw: Network_Usage?) {
         guard let value = raw, self.enabled else { return }
+
+        self.analyticsCoordinator.updateNetwork(TrafficAnalyticsCoordinator.networkIdentity(from: value))
         
         self.popupView.usageCallback(value)
         self.portalView.usageCallback(value)
