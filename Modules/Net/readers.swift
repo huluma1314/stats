@@ -721,7 +721,9 @@ public class ProcessReader: Reader<[Network_Process]> {
     }
     
     public override func setup() {
-        self.popup = true
+        // Keep continuous collection enabled even when the network popup is closed.
+        // Popup rendering still consumes callbacks; analytics persistence does not.
+        self.popup = false
     }
     
     public override func read() {
