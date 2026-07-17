@@ -98,6 +98,42 @@ public class DB {
     public func findOne<T: Decodable>(_ dynamicType: T.Type, key: String) -> T? {
         return self.values[key] as? T
     }
+
+    public func putRaw(key: String, value: String) {
+        self.queue.sync {
+            _ = self.lldb?.insert(key, value: value)
+        }
+    }
+
+    public func getRaw(key: String) -> String? {
+        self.queue.sync {
+            self.lldb?.findOne(key)
+        }
+    }
+
+    public func values(prefix: String) -> [String] {
+        self.queue.sync {
+            (self.lldb?.findMany(prefix) as? [String]) ?? []
+        }
+    }
+
+    public func keys(prefix: String) -> [String] {
+        self.queue.sync {
+            (self.lldb?.keys(prefix) as? [String]) ?? []
+        }
+    }
+
+    public func delete(keys: [String]) {
+        guard !keys.isEmpty else { return }
+        self.queue.sync {
+            _ = self.lldb?.deleteMany(keys)
+        }
+    }
+
+    public func delete(prefix: String) {
+        let keys = self.keys(prefix: prefix)
+        self.delete(keys: keys)
+    }
     
     private func clean(_ key: String) {
         guard let keys = self.lldb?.keys(key) as? [String] else { return }

@@ -193,6 +193,93 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertFalse(ApplicationIdentityResolver.matches(summary, search: "chrome"))
     }
 
+    func testHistoryRepositoryInsertsAndFetchesOrderedRange() {
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let network = NetworkIdentity(id: "wifi-home", displayName: "Home", interfaceName: "en0", kind: .wifi)
+        let t0 = Date(timeIntervalSince1970: 1_721_234_567)
+        let samples = [
+            self.sample(at: t0.addingTimeInterval(2), network: network, applicationID: "app.a", download: 20, upload: 5),
+            self.sample(at: t0, network: network, applicationID: "app.a", download: 10, upload: 1),
+            self.sample(at: t0.addingTimeInterval(1), network: network, applicationID: "app.b", download: 3, upload: 2)
+        ]
+        repository.insert(samples: samples)
+
+        let fetched = repository.fetch(
+            TrafficHistoryQuery(level: .second, start: t0, end: t0.addingTimeInterval(2))
+        )
+        XCTAssertEqual(fetched.map(\.timestamp), [t0, t0.addingTimeInterval(1), t0.addingTimeInterval(2)])
+        XCTAssertEqual(
+            TrafficHistoryRepository.makeKey(
+                level: .second,
+                timestamp: t0,
+                networkID: network.id,
+                applicationID: "app.a"
+            ),
+            "net.analytics.v1|second|00000000001721234567|wifi-home|app.a"
+        )
+    }
+
+    func testHistoryRepositoryFiltersByNetworkAndApplication() {
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let wifi = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let eth = NetworkIdentity(id: "eth", displayName: "Ethernet", interfaceName: "en1", kind: .ethernet)
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        repository.insert(samples: [
+            self.sample(at: t0, network: wifi, applicationID: "app.a", download: 1, upload: 1),
+            self.sample(at: t0.addingTimeInterval(1), network: eth, applicationID: "app.a", download: 2, upload: 2),
+            self.sample(at: t0.addingTimeInterval(2), network: wifi, applicationID: "app.b", download: 3, upload: 3)
+        ])
+
+        let filtered = repository.fetch(
+            TrafficHistoryQuery(
+                level: .second,
+                start: t0,
+                end: t0.addingTimeInterval(10),
+                networkID: "wifi",
+                applicationID: "app.a"
+            )
+        )
+        XCTAssertEqual(filtered.count, 1)
+        XCTAssertEqual(filtered[0].application.id, "app.a")
+        XCTAssertEqual(filtered[0].network.id, "wifi")
+    }
+
+    func testHistoryRepositoryDeletesAllSamples() {
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let t0 = Date(timeIntervalSince1970: 1_700_000_100)
+        repository.insert(self.sample(at: t0, network: network, applicationID: "app.a", download: 9, upload: 1))
+        repository.deleteAll()
+        XCTAssertTrue(
+            repository.fetch(TrafficHistoryQuery(level: .second, start: t0.addingTimeInterval(-10), end: t0.addingTimeInterval(10))).isEmpty
+        )
+    }
+
+    private func sample(
+        at timestamp: Date,
+        network: NetworkIdentity,
+        applicationID: String,
+        download: UInt64,
+        upload: UInt64
+    ) -> TrafficSample {
+        TrafficSample(
+            timestamp: timestamp,
+            application: ApplicationIdentity(
+                id: applicationID,
+                displayName: applicationID,
+                bundleIdentifier: applicationID,
+                executablePath: nil
+            ),
+            network: network,
+            processID: 1,
+            delta: TrafficDelta(download: download, upload: upload),
+            peakBytesPerSecond: download + upload
+        )
+    }
+
     private func counter(
         startToken: UInt64,
         download: UInt64,
