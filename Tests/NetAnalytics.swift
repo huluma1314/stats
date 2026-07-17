@@ -342,6 +342,20 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(NetworkPreviewPage(storedRawValue: nil), .realtime)
     }
 
+    func testTrafficSelectionRefreshIntervals() {
+        XCTAssertNil(TrafficRefreshMode.manual.interval)
+        XCTAssertEqual(TrafficRefreshMode.fiveSeconds.interval, 5)
+        XCTAssertEqual(TrafficRefreshMode.tenSeconds.interval, 10)
+        XCTAssertEqual(TrafficRefreshMode.thirtySeconds.interval, 30)
+        XCTAssertEqual(TrafficRefreshMode.oneMinute.interval, 60)
+        XCTAssertEqual(TrafficRefreshMode.fiveMinutes.interval, 300)
+
+        let now = Date(timeIntervalSince1970: 1_721_234_567)
+        let selection = TrafficSelection(range: .tenMinutes)
+        let interval = selection.interval(now: now)
+        XCTAssertEqual(interval.duration, 600, accuracy: 0.001)
+    }
+
     func testCoordinatorBaselinesThenWritesDeltas() {
         let store = InMemoryTrafficStore()
         let repository = TrafficHistoryRepository(store: store)

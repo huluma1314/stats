@@ -54,6 +54,10 @@ internal class Preview: PreviewWrapper {
     private var realtimeContainer: NSStackView? = nil
     private var analysisContainer: NSView? = nil
     private var overviewContainer: NSView? = nil
+    private var analysisView: TrafficAnalysisView? = nil
+    private let analyticsEngine = TrafficAnalyticsEngine(
+        repository: TrafficHistoryRepository(store: LevelDBTrafficStore())
+    )
     private var currentPage: NetworkPreviewPage = NetworkPreviewPage(
         storedRawValue: Store.shared.string(key: NetworkPreviewPage.storageKey, defaultValue: NetworkPreviewPage.realtime.rawValue)
     )
@@ -108,13 +112,19 @@ internal class Preview: PreviewWrapper {
         realtime.addArrangedSubview(splitView)
         realtime.addArrangedSubview(PreferencesSection(title: localizedString("Address"), [self.addressesView()]))
 
-        let analysis = self.placeholderPage(title: localizedString("Traffic analysis"))
+        let analysisHost = NSStackView()
+        analysisHost.orientation = .vertical
+        analysisHost.translatesAutoresizingMaskIntoConstraints = false
+        analysisHost.isHidden = true
+        let analysis = TrafficAnalysisView(engine: self.analyticsEngine)
+        self.analysisView = analysis
+        analysisHost.addArrangedSubview(analysis)
         let overview = self.placeholderPage(title: localizedString("Usage overview"))
-        self.analysisContainer = analysis
+        self.analysisContainer = analysisHost
         self.overviewContainer = overview
 
         self.addArrangedSubview(realtime)
-        self.addArrangedSubview(analysis)
+        self.addArrangedSubview(analysisHost)
         self.addArrangedSubview(overview)
         self.applyPage(self.currentPage)
     }
