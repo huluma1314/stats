@@ -765,44 +765,23 @@ public class ProcessReader: Reader<[Network_Process]> {
         let output = String(data: outputData, encoding: .utf8)
         _ = String(data: errorData, encoding: .utf8)
         guard let output, !output.isEmpty else { return }
-        
+
+        let parsed = NettopSnapshotParser.parse(csv: output)
         var list: [Network_Process] = []
-        var firstLine = false
-        output.enumerateLines { (line, _) in
-            if !firstLine {
-                firstLine = true
-                return
-            }
-            
-            let parsedLine = line.split(separator: ",")
-            guard parsedLine.count >= 3 else {
-                return
-            }
-            
+        for row in parsed.rows {
             var process = Network_Process()
             process.time = Date()
-            
-            let nameArray = parsedLine[0].split(separator: ".")
-            if let pid = nameArray.last {
-                process.pid = Int(pid) ?? 0
-            }
-            if let app = NSRunningApplication(processIdentifier: pid_t(process.pid) ) {
-                process.name = app.localizedName ?? nameArray.dropLast().joined(separator: ".")
+            process.pid = Int(row.processID)
+            if let app = NSRunningApplication(processIdentifier: pid_t(process.pid)) {
+                process.name = app.localizedName ?? row.processName
             } else {
-                process.name = nameArray.dropLast().joined(separator: ".")
+                process.name = row.processName
             }
-            
-            if process.name == "" {
+            if process.name.isEmpty {
                 process.name = "\(process.pid)"
             }
-            
-            if let download = Int(parsedLine[1]) {
-                process.download = download
-            }
-            if let upload = Int(parsedLine[2]) {
-                process.upload = upload
-            }
-            
+            process.download = Int(clamping: row.download)
+            process.upload = Int(clamping: row.upload)
             list.append(process)
         }
         
