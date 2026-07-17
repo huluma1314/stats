@@ -258,6 +258,111 @@ final class NetAnalyticsTests: XCTestCase {
         )
     }
 
+    func testHeatmapKindsMatchSelectedRanges() {
+        XCTAssertEqual(TrafficAggregation.heatmapKind(for: .tenMinutes), .thirtySeconds)
+        XCTAssertEqual(TrafficAggregation.heatmapKind(for: .oneHour), .fiveMinutes)
+        XCTAssertEqual(TrafficAggregation.heatmapKind(for: .today), .oneHour)
+        XCTAssertEqual(TrafficAggregation.heatmapKind(for: .sevenDays), .weekdayHour)
+        XCTAssertEqual(TrafficAggregation.heatmapKind(for: .thirtyDays), .oneDay)
+        XCTAssertEqual(TrafficAggregation.heatmapKind(for: .currentMonth), .oneDay)
+    }
+
+    func testAnalyticsEngineRanksAndTotalsSamples() {
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let wifi = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = Date(timeIntervalSince1970: 1_721_234_600)
+        repository.insert(samples: [
+            self.sample(at: now.addingTimeInterval(-30), network: wifi, applicationID: "app.a", download: 100, upload: 20),
+            self.sample(at: now.addingTimeInterval(-20), network: wifi, applicationID: "app.b", download: 40, upload: 10),
+            self.sample(at: now.addingTimeInterval(-10), network: wifi, applicationID: "app.a", download: 50, upload: 5)
+        ])
+
+        let engine = TrafficAnalyticsEngine(repository: repository)
+        let snapshot = engine.snapshot(for: TrafficAnalyticsQuery(range: .tenMinutes, now: now))
+        XCTAssertEqual(snapshot.download, 190)
+        XCTAssertEqual(snapshot.upload, 35)
+        XCTAssertEqual(snapshot.total, 225)
+        XCTAssertEqual(snapshot.ranking.map(\.identity.id), ["app.a", "app.b"])
+        XCTAssertEqual(snapshot.ranking[0].download, 150)
+        XCTAssertFalse(snapshot.buckets.isEmpty)
+    }
+
+    func testAnalyticsEngineDeduplicatesTunnelAgainstPhysical() {
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let wifi = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let tunnel = NetworkIdentity(id: "utun", displayName: "VPN", interfaceName: "utun0", kind: .tunnel)
+        let now = Date(timeIntervalSince1970: 1_721_234_700)
+        repository.insert(samples: [
+            self.sample(at: now.addingTimeInterval(-5), network: wifi, applicationID: "app.a", download: 100, upload: 10),
+            self.sample(at: now.addingTimeInterval(-5), network: tunnel, applicationID: "app.a", download: 100, upload: 10)
+        ])
+
+        let engine = TrafficAnalyticsEngine(repository: repository)
+        let snapshot = engine.snapshot(for: TrafficAnalyticsQuery(range: .tenMinutes, now: now))
+        XCTAssertEqual(snapshot.total, 110)
+    }
+
+    func testAnalyticsEngineForecastUsesBillingRate() {
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let engine = TrafficAnalyticsEngine(repository: repository, calendar: calendar)
+        let start = Date(timeIntervalSince1970: 1_704_067_200) // 2024-01-01 00:00 UTC
+        let samples = [
+            self.sample(
+                at: start,
+                network: NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi),
+                applicationID: "app.a",
+                download: 100,
+                upload: 0
+            ),
+            self.sample(
+                at: start.addingTimeInterval(2 * 86_400),
+                network: NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi),
+                applicationID: "app.a",
+                download: 200,
+                upload: 0
+            )
+        ]
+        let forecast = engine.forecast(samples: samples, billingCycleDay: 1, now: start.addingTimeInterval(2 * 86_400))
+        XCTAssertEqual(forecast.state, .ready)
+        // 300 total bytes over 2 elapsed days => 150 bytes/day average.
+        XCTAssertEqual(forecast.averageBytesPerDay, 150)
+        XCTAssertNotNil(forecast.projectedBytes)
+    }
+
+    func testRetentionCompactionPromotesSecondsToMinutes() {
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let wifi = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let old = now.addingTimeInterval(-25 * 60 * 60)
+        repository.insert(samples: [
+            self.sample(at: old, network: wifi, applicationID: "app.a", download: 10, upload: 1),
+            self.sample(at: old.addingTimeInterval(30), network: wifi, applicationID: "app.a", download: 5, upload: 2)
+        ])
+
+        TrafficAggregation.compact(
+            repository: repository,
+            now: now,
+            policy: TrafficRetentionPolicy(secondRetention: 24 * 60 * 60, minuteRetention: 30 * 24 * 60 * 60, hourRetention: 2 * 365 * 24 * 60 * 60)
+        )
+
+        let seconds = repository.fetch(
+            TrafficHistoryQuery(level: .second, start: old.addingTimeInterval(-120), end: now)
+        )
+        let minutes = repository.fetch(
+            TrafficHistoryQuery(level: .minute, start: old.addingTimeInterval(-120), end: now)
+        )
+        XCTAssertTrue(seconds.isEmpty)
+        XCTAssertEqual(minutes.count, 1)
+        XCTAssertEqual(minutes.first?.delta.download, 15)
+        XCTAssertEqual(minutes.first?.delta.upload, 3)
+    }
+
     private func sample(
         at timestamp: Date,
         network: NetworkIdentity,
