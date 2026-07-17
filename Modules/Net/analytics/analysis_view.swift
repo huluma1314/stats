@@ -8,22 +8,31 @@ import Kit
 
 internal final class TrafficAnalysisView: NSView {
     private let engine: TrafficAnalyticsEngine
+    private let repository: TrafficHistoryRepository
     private var selection = TrafficSelection()
     private var snapshot: TrafficAnalyticsSnapshot?
     private var refreshTimer: Timer?
+    private var fullRanking: [ApplicationTrafficSummary] = []
 
     private let rangeControl = NSSegmentedControl()
     private let chartModeControl = NSSegmentedControl()
     private let refreshControl = NSPopUpButton()
     private let networkControl = NSPopUpButton()
+    private let exportControl = NSPopUpButton()
     private let refreshButton = NSButton()
     private let downloadLabel = NSTextField(labelWithString: "—")
     private let uploadLabel = NSTextField(labelWithString: "—")
     private let totalLabel = NSTextField(labelWithString: "—")
-    private let rankingLabel = NSTextField(labelWithString: "")
+    private let hoverLabel = NSTextField(labelWithString: "")
+    private let lineChart = TrafficTimelineChartView()
+    private let heatmap = TrafficHeatmapView()
+    private let table = ApplicationTrafficTableController()
+    private let detail = ApplicationDetailView()
+    private let contentStack = NSStackView()
 
-    init(engine: TrafficAnalyticsEngine) {
+    init(engine: TrafficAnalyticsEngine, repository: TrafficHistoryRepository) {
         self.engine = engine
+        self.repository = repository
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
         self.build()
@@ -43,21 +52,30 @@ internal final class TrafficAnalysisView: NSView {
         if let selection {
             self.selection = selection
         }
-        self.snapshot = self.engine.snapshot(for: self.selection.analyticsQuery())
+        var query = self.selection.analyticsQuery()
+        query = TrafficAnalyticsQuery(
+            range: query.range,
+            networkFilter: query.networkFilter,
+            includeLocalNetwork: TrafficRuleStore().includeLocalNetwork,
+            applicationSearch: query.applicationSearch,
+            selectedInterval: query.selectedInterval,
+            billingCycleDay: TrafficRuleStore().networkPlan().billingCycleDay,
+            now: Date()
+        )
+        self.snapshot = self.engine.snapshot(for: query)
         self.render()
     }
 
     private func build() {
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        self.addSubview(stack)
+        self.contentStack.orientation = .vertical
+        self.contentStack.spacing = 12
+        self.contentStack.translatesAutoresizingMaskIntoConstraints = false
+        self.addSubview(self.contentStack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: self.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: self.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: self.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: self.bottomAnchor)
+            self.contentStack.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+            self.contentStack.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            self.contentStack.topAnchor.constraint(equalTo: self.topAnchor),
+            self.contentStack.bottomAnchor.constraint(equalTo: self.bottomAnchor)
         ])
 
         self.rangeControl.segmentCount = TrafficRange.allCases.count
@@ -91,6 +109,13 @@ internal final class TrafficAnalysisView: NSView {
         self.networkControl.target = self
         self.networkControl.action = #selector(self.controlsChanged)
 
+        self.exportControl.removeAllItems()
+        self.exportControl.addItem(withTitle: localizedString("Export"))
+        self.exportControl.addItem(withTitle: "CSV")
+        self.exportControl.addItem(withTitle: "JSON")
+        self.exportControl.target = self
+        self.exportControl.action = #selector(self.exportChanged)
+
         self.refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         self.refreshButton.bezelStyle = .texturedRounded
         self.refreshButton.target = self
@@ -101,11 +126,12 @@ internal final class TrafficAnalysisView: NSView {
             self.chartModeControl,
             self.networkControl,
             self.refreshControl,
+            self.exportControl,
             self.refreshButton
         ])
         controls.orientation = .horizontal
         controls.spacing = 8
-        stack.addArrangedSubview(controls)
+        self.contentStack.addArrangedSubview(controls)
 
         let cards = NSStackView(views: [
             self.summaryCard(title: localizedString("Download"), field: self.downloadLabel),
@@ -115,11 +141,59 @@ internal final class TrafficAnalysisView: NSView {
         cards.orientation = .horizontal
         cards.distribution = .fillEqually
         cards.spacing = 8
-        stack.addArrangedSubview(cards)
+        self.contentStack.addArrangedSubview(cards)
 
-        self.rankingLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        self.rankingLabel.maximumNumberOfLines = 12
-        stack.addArrangedSubview(self.rankingLabel)
+        self.hoverLabel.textColor = .secondaryLabelColor
+        self.hoverLabel.font = .systemFont(ofSize: 11)
+        self.contentStack.addArrangedSubview(self.hoverLabel)
+
+        self.lineChart.translatesAutoresizingMaskIntoConstraints = false
+        self.lineChart.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        self.heatmap.translatesAutoresizingMaskIntoConstraints = false
+        self.heatmap.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        self.heatmap.isHidden = true
+        self.contentStack.addArrangedSubview(self.lineChart)
+        self.contentStack.addArrangedSubview(self.heatmap)
+
+        self.lineChart.onSelection = { [weak self] interval in
+            guard let self else { return }
+            self.selection.selectedInterval = interval
+            self.reload()
+        }
+        self.lineChart.onHover = { [weak self] point in
+            guard let self, let point else {
+                self?.hoverLabel.stringValue = ""
+                return
+            }
+            self.hoverLabel.stringValue = "↓\(Units(bytes: Int64(point.download)).getReadableMemory())  ↑\(Units(bytes: Int64(point.upload)).getReadableMemory())  Σ\(Units(bytes: Int64(point.total)).getReadableMemory())"
+        }
+        self.heatmap.onSelect = { [weak self] cell in
+            guard let self else { return }
+            if let cell {
+                self.selection.selectedInterval = DateInterval(start: cell.start, end: cell.end)
+            } else {
+                self.selection.selectedInterval = nil
+            }
+            self.reload()
+        }
+        self.heatmap.onHover = { [weak self] cell in
+            guard let self, let cell else {
+                self?.hoverLabel.stringValue = ""
+                return
+            }
+            self.hoverLabel.stringValue = "↓\(Units(bytes: Int64(cell.download)).getReadableMemory())  ↑\(Units(bytes: Int64(cell.upload)).getReadableMemory())  Σ\(Units(bytes: Int64(cell.total)).getReadableMemory())"
+        }
+
+        self.table.onSelect = { [weak self] summary in
+            guard let self, let summary else { return }
+            self.detail.show(summary)
+            self.table.rootView().isHidden = true
+        }
+        self.detail.onClose = { [weak self] in
+            self?.table.rootView().isHidden = false
+        }
+        self.contentStack.addArrangedSubview(self.table.rootView())
+        self.contentStack.addArrangedSubview(self.detail)
     }
 
     private func summaryCard(title: String, field: NSTextField) -> NSView {
@@ -141,6 +215,7 @@ internal final class TrafficAnalysisView: NSView {
         let ranges = TrafficRange.allCases
         if self.rangeControl.selectedSegment >= 0, self.rangeControl.selectedSegment < ranges.count {
             self.selection.range = ranges[self.rangeControl.selectedSegment]
+            self.selection.selectedInterval = nil
         }
         self.selection.chartMode = self.chartModeControl.selectedSegment == 1 ? .heatmap : .line
         let refreshModes = TrafficRefreshMode.allCases
@@ -156,8 +231,41 @@ internal final class TrafficAnalysisView: NSView {
                 self.selection.networkFilter = kinds[index]
             }
         }
+        self.lineChart.isHidden = self.selection.chartMode != .line
+        self.heatmap.isHidden = self.selection.chartMode != .heatmap
         self.scheduleRefresh()
         self.reload()
+    }
+
+    @objc private func exportChanged() {
+        guard self.exportControl.indexOfSelectedItem > 0 else { return }
+        let format: TrafficExportFormat = self.exportControl.indexOfSelectedItem == 1 ? .csv : .json
+        self.exportControl.selectItem(at: 0)
+        guard let snapshot else { return }
+
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = format == .csv ? "network-traffic.csv" : "network-traffic.json"
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try TrafficExporter.write(
+                        snapshot: snapshot,
+                        networkFilter: self.selection.networkFilter,
+                        format: format,
+                        to: url
+                    )
+                } catch {
+                    DispatchQueue.main.async {
+                        let alert = NSAlert()
+                        alert.messageText = localizedString("Export failed")
+                        alert.informativeText = error.localizedDescription
+                        alert.runModal()
+                    }
+                }
+            }
+        }
     }
 
     @objc private func refreshClicked() {
@@ -178,12 +286,12 @@ internal final class TrafficAnalysisView: NSView {
         self.downloadLabel.stringValue = Units(bytes: Int64(snapshot.download)).getReadableMemory()
         self.uploadLabel.stringValue = Units(bytes: Int64(snapshot.upload)).getReadableMemory()
         self.totalLabel.stringValue = Units(bytes: Int64(snapshot.total)).getReadableMemory()
-
-        let lines = snapshot.ranking.prefix(8).map { item in
-            let total = Units(bytes: Int64(item.total)).getReadableMemory()
-            return "\(item.identity.displayName)  ↓\(Units(bytes: Int64(item.download)).getReadableMemory())  ↑\(Units(bytes: Int64(item.upload)).getReadableMemory())  Σ\(total)"
-        }
-        self.rankingLabel.stringValue = lines.isEmpty ? localizedString("No application traffic yet") : lines.joined(separator: "\n")
+        self.fullRanking = snapshot.ranking
+        self.lineChart.points = TrafficChartGeometry.points(from: snapshot.buckets)
+        self.heatmap.cells = TrafficChartGeometry.heatmapCells(from: snapshot.buckets)
+        self.table.update(snapshot.ranking)
+        self.lineChart.isHidden = self.selection.chartMode != .line
+        self.heatmap.isHidden = self.selection.chartMode != .heatmap
     }
 
     private func rangeTitle(_ range: TrafficRange) -> String {

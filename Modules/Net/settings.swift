@@ -74,6 +74,9 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
     private var baseValue: String = "byte"
     private var speedUnitValue: String = NetworkSpeedUnitAuto
     private var textValue: String = "$addr.public - $status"
+    private var includeLocalNetwork: Bool = true
+    private var billingCycleDay: Int = 1
+    private var networkQuotaGB: Int = 0
     
     public var callback: (() -> Void) = {}
     public var callbackWhenUpdateNumberOfProcesses: (() -> Void) = {}
@@ -81,11 +84,13 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
     public var connectivityHostCallback: ((_ newState: Bool) -> Void) = { _ in }
     public var setInterval: ((_ value: Int) -> Void) = {_ in }
     public var publicIPRefreshIntervalCallback: (() -> Void) = {}
+    public var clearAnalyticsHistoryCallback: (() -> Void) = {}
     
     private let title: String
     private var section: PreferencesSection? = nil
     private var widgetThresholdSection: PreferencesSection? = nil
     private let textWidgetHelpPanel: HelpHUD = HelpHUD(textWidgetHelp)
+    private let ruleStore = TrafficRuleStore()
     
     private var list: [Network_interface] = []
     
@@ -116,6 +121,12 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
         self.baseValue = Store.shared.string(key: "\(self.title)_base", defaultValue: self.baseValue)
         self.speedUnitValue = networkSpeedUnit(from: Store.shared.string(key: "\(self.title)_speedUnit", defaultValue: self.speedUnitValue)).key
         self.textValue = Store.shared.string(key: "\(self.title)_textWidgetValue", defaultValue: self.textValue)
+        self.includeLocalNetwork = self.ruleStore.includeLocalNetwork
+        let plan = self.ruleStore.networkPlan()
+        self.billingCycleDay = plan.billingCycleDay
+        if let limit = plan.byteLimit {
+            self.networkQuotaGB = Int(limit / 1_000_000_000)
+        }
         
         super.init(frame: NSRect.zero)
         self.orientation = .vertical
@@ -142,6 +153,34 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
                 items: NumbersOfProcesses.map{ KeyValue_t(key: "\($0)", value: "\($0)") },
                 selected: "\(self.numberOfProcesses)"
             ))
+        ]))
+
+        let clearButton = NSButton(title: localizedString("Clear analytics history"), target: self, action: #selector(self.clearAnalyticsHistory))
+        clearButton.bezelStyle = .rounded
+        let enforcement = UnavailableNetworkRuleEnforcer().capability
+        let enforcementText: String
+        if case .unavailable(let reason) = enforcement {
+            enforcementText = reason.message
+        } else {
+            enforcementText = localizedString("Network controls are available on this build.")
+        }
+        self.addArrangedSubview(PreferencesSection(title: localizedString("Traffic analytics"), [
+            PreferencesRow(localizedString("Include local network"), component: switchView(
+                action: #selector(self.toggleIncludeLocalNetwork),
+                state: self.includeLocalNetwork
+            )),
+            PreferencesRow(localizedString("Billing cycle day"), component: selectView(
+                action: #selector(self.changeBillingCycleDay),
+                items: (1...28).map { KeyValue_t(key: "\($0)", value: "\($0)") },
+                selected: "\(self.billingCycleDay)"
+            )),
+            PreferencesRow(localizedString("Monthly quota (GB, 0 = none)"), component: selectView(
+                action: #selector(self.changeNetworkQuota),
+                items: [0, 10, 20, 50, 100, 200, 500, 1024].map { KeyValue_t(key: "\($0)", value: "\($0)") },
+                selected: "\(self.networkQuotaGB)"
+            )),
+            PreferencesRow(localizedString("Enforcement"), component: NSTextField(labelWithString: enforcementText)),
+            PreferencesRow(localizedString("History"), component: clearButton)
         ]))
         
         let interfaces = selectView(
@@ -387,5 +426,39 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
         if self.connectivityMode == .http {
             self.connectivityHostField?.stringValue = self.connectivityHTTPHost
         }
+    }
+
+    @objc private func toggleIncludeLocalNetwork(_ sender: NSControl) {
+        self.includeLocalNetwork = controlState(sender)
+        self.ruleStore.includeLocalNetwork = self.includeLocalNetwork
+    }
+
+    @objc private func changeBillingCycleDay(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, let value = Int(key) else { return }
+        self.billingCycleDay = value
+        var plan = self.ruleStore.networkPlan()
+        plan.billingCycleDay = value
+        self.ruleStore.save(networkPlan: plan)
+    }
+
+    @objc private func changeNetworkQuota(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, let value = Int(key) else { return }
+        self.networkQuotaGB = value
+        var plan = self.ruleStore.networkPlan()
+        plan.byteLimit = value == 0 ? nil : UInt64(value) * 1_000_000_000
+        self.ruleStore.save(networkPlan: plan)
+    }
+
+    @objc private func clearAnalyticsHistory() {
+        let alert = NSAlert()
+        alert.messageText = localizedString("Clear analytics history")
+        alert.informativeText = localizedString("This permanently deletes local traffic analytics history.")
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: localizedString("Clear"))
+        alert.addButton(withTitle: localizedString("Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        TrafficHistoryRepository(store: LevelDBTrafficStore()).deleteAll()
+        TrafficAlertStore().clear()
+        self.clearAnalyticsHistoryCallback()
     }
 }

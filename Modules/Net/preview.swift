@@ -55,9 +55,10 @@ internal class Preview: PreviewWrapper {
     private var analysisContainer: NSView? = nil
     private var overviewContainer: NSView? = nil
     private var analysisView: TrafficAnalysisView? = nil
-    private let analyticsEngine = TrafficAnalyticsEngine(
-        repository: TrafficHistoryRepository(store: LevelDBTrafficStore())
-    )
+    private var overviewView: TrafficOverviewView? = nil
+    private let analyticsRepository = TrafficHistoryRepository(store: LevelDBTrafficStore())
+    private lazy var analyticsEngine = TrafficAnalyticsEngine(repository: self.analyticsRepository)
+    private let ruleStore = TrafficRuleStore()
     private var currentPage: NetworkPreviewPage = NetworkPreviewPage(
         storedRawValue: Store.shared.string(key: NetworkPreviewPage.storageKey, defaultValue: NetworkPreviewPage.realtime.rawValue)
     )
@@ -116,16 +117,24 @@ internal class Preview: PreviewWrapper {
         analysisHost.orientation = .vertical
         analysisHost.translatesAutoresizingMaskIntoConstraints = false
         analysisHost.isHidden = true
-        let analysis = TrafficAnalysisView(engine: self.analyticsEngine)
+        let analysis = TrafficAnalysisView(engine: self.analyticsEngine, repository: self.analyticsRepository)
         self.analysisView = analysis
         analysisHost.addArrangedSubview(analysis)
-        let overview = self.placeholderPage(title: localizedString("Usage overview"))
+
+        let overviewHost = NSStackView()
+        overviewHost.orientation = .vertical
+        overviewHost.translatesAutoresizingMaskIntoConstraints = false
+        overviewHost.isHidden = true
+        let overview = TrafficOverviewView(engine: self.analyticsEngine, planStore: self.ruleStore)
+        self.overviewView = overview
+        overviewHost.addArrangedSubview(overview)
+
         self.analysisContainer = analysisHost
-        self.overviewContainer = overview
+        self.overviewContainer = overviewHost
 
         self.addArrangedSubview(realtime)
         self.addArrangedSubview(analysisHost)
-        self.addArrangedSubview(overview)
+        self.addArrangedSubview(overviewHost)
         self.applyPage(self.currentPage)
     }
     
@@ -183,6 +192,12 @@ internal class Preview: PreviewWrapper {
         self.realtimeContainer?.isHidden = page != .realtime
         self.analysisContainer?.isHidden = page != .analysis
         self.overviewContainer?.isHidden = page != .overview
+        if page == .analysis {
+            self.analysisView?.reload()
+        }
+        if page == .overview {
+            self.overviewView?.reload()
+        }
     }
     
     private func usageView() -> NSView {

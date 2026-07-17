@@ -356,6 +356,145 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(interval.duration, 600, accuracy: 0.001)
     }
 
+    func testChartGeometrySelectionAndHeatmapIndex() {
+        let points = [
+            ChartPoint(timestamp: Date(timeIntervalSince1970: 100), download: 1, upload: 1),
+            ChartPoint(timestamp: Date(timeIntervalSince1970: 200), download: 2, upload: 2),
+            ChartPoint(timestamp: Date(timeIntervalSince1970: 300), download: 3, upload: 3)
+        ]
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 200)
+        let plot = TrafficChartGeometry.plotRect(in: bounds)
+        let interval = TrafficChartGeometry.selectionInterval(
+            from: plot.minX,
+            to: plot.maxX,
+            points: points,
+            in: bounds
+        )
+        XCTAssertEqual(interval?.start, points.first?.timestamp)
+        XCTAssertEqual(interval?.end, points.last?.timestamp)
+
+        let cells = [
+            HeatmapCell(start: Date(timeIntervalSince1970: 1), end: Date(timeIntervalSince1970: 2), download: 1, upload: 1, intensity: 0.2),
+            HeatmapCell(start: Date(timeIntervalSince1970: 2), end: Date(timeIntervalSince1970: 3), download: 2, upload: 2, intensity: 0.8)
+        ]
+        let first = TrafficChartGeometry.heatmapIndex(at: CGPoint(x: plot.minX + 2, y: plot.maxY - 2), cells: cells, in: bounds)
+        XCTAssertEqual(first, 0)
+        XCTAssertNil(TrafficChartGeometry.heatmapIndex(at: CGPoint(x: 0, y: 0), cells: cells, in: bounds))
+    }
+
+    func testApplicationPresenterSortAndFilter() {
+        let a = ApplicationTrafficSummary(
+            identity: ApplicationIdentity(id: "a", displayName: "Alpha", bundleIdentifier: "com.a", executablePath: nil),
+            download: 10,
+            upload: 1,
+            peakBytesPerSecond: 5,
+            processes: []
+        )
+        let b = ApplicationTrafficSummary(
+            identity: ApplicationIdentity(id: "b", displayName: "Beta", bundleIdentifier: "com.b", executablePath: nil),
+            download: 30,
+            upload: 2,
+            peakBytesPerSecond: 9,
+            processes: []
+        )
+        let sorted = ApplicationTrafficPresenter.sort([a, b], by: .total, ascending: false)
+        XCTAssertEqual(sorted.map(\.identity.id), ["b", "a"])
+        XCTAssertEqual(ApplicationTrafficPresenter.filter([a, b], search: "alp").map(\.identity.id), ["a"])
+    }
+
+    func testExportCSVAndJSON() throws {
+        let snapshot = TrafficAnalyticsSnapshot(
+            range: .tenMinutes,
+            start: Date(timeIntervalSince1970: 10),
+            end: Date(timeIntervalSince1970: 20),
+            download: 30,
+            upload: 5,
+            total: 35,
+            buckets: [],
+            ranking: [
+                ApplicationTrafficSummary(
+                    identity: ApplicationIdentity(id: "app.a", displayName: "App, A", bundleIdentifier: "com.a", executablePath: "/A"),
+                    download: 30,
+                    upload: 5,
+                    peakBytesPerSecond: 12,
+                    processes: []
+                )
+            ],
+            forecast: nil
+        )
+        let csv = TrafficExporter.csv(from: snapshot, networkFilter: .wifi)
+        XCTAssertTrue(csv.contains("schema_version"))
+        XCTAssertTrue(csv.contains("\"App, A\""))
+        let data = try TrafficExporter.json(from: snapshot, networkFilter: .wifi)
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertEqual(object?["schemaVersion"] as? Int, 1)
+        XCTAssertEqual(object?["total"] as? UInt64, 35)
+    }
+
+    func testRuleEngineThresholdsAndPause() {
+        let evaluation = TrafficRuleEngine.evaluate(
+            usageBytes: 90,
+            limitBytes: 100,
+            thresholds: [80, 90, 100],
+            alreadyNotified: [80],
+            action: .notify,
+            isPaused: false,
+            allowUntil: nil,
+            now: Date()
+        )
+        XCTAssertEqual(evaluation.triggeredThresholds, [90])
+
+        let paused = TrafficRuleEngine.evaluate(
+            usageBytes: 100,
+            limitBytes: 100,
+            thresholds: [100],
+            alreadyNotified: [],
+            action: .block,
+            isPaused: true,
+            allowUntil: nil,
+            now: Date()
+        )
+        XCTAssertTrue(paused.triggeredThresholds.isEmpty)
+        XCTAssertNil(paused.action)
+
+        XCTAssertTrue(TrafficRuleEngine.validate(plan: .default))
+        XCTAssertFalse(TrafficRuleEngine.validate(billingCycleDay: 0, byteLimit: 1, thresholds: [80, 70]))
+    }
+
+    func testUnavailableEnforcerNeverSucceeds() {
+        let enforcer = UnavailableNetworkRuleEnforcer()
+        XCTAssertEqual(enforcer.capability, .unavailable(.missingEntitlement))
+        XCTAssertThrowsError(
+            try enforcer.apply(NetworkEnforcementAction(applicationID: "app", kind: .block(.both)))
+        )
+        let fake = FakeNetworkRuleEnforcer()
+        XCTAssertNoThrow(try fake.apply(NetworkEnforcementAction(applicationID: "app", kind: .rateLimit(downloadBytesPerSecond: 1, uploadBytesPerSecond: 2))))
+        XCTAssertEqual(fake.applied.count, 1)
+    }
+
+    func testAnomalyDetectorConnectivityAndDedup() {
+        let detector = TrafficAnomalyDetector(sustainedUploadBytesPerSecond: 10, sustainedDurationSeconds: 30, spikeMultiplier: 2, minimumBaselineBytes: 1)
+        let sample = TrafficSample(
+            timestamp: Date(),
+            application: ApplicationIdentity(id: "a", displayName: "A", bundleIdentifier: nil, executablePath: nil),
+            network: NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi),
+            processID: 1,
+            delta: TrafficDelta(download: 0, upload: 100),
+            peakBytesPerSecond: 100
+        )
+        let events = detector.evaluate(
+            recentSamples: [sample],
+            baselineAverageBytes: 10,
+            connectivityOnline: true,
+            previousConnectivityOnline: false,
+            disconnectCountLastHour: 3
+        )
+        XCTAssertTrue(events.contains { $0.kind == .sustainedUpload })
+        XCTAssertTrue(events.contains { $0.kind == .baselineSpike })
+        XCTAssertTrue(events.contains { $0.kind == .connectivity })
+        XCTAssertEqual(detector.deduplicate(events + events).count, events.count)
+    }
+
     func testCoordinatorBaselinesThenWritesDeltas() {
         let store = InMemoryTrafficStore()
         let repository = TrafficHistoryRepository(store: store)
