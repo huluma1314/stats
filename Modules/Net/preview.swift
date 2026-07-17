@@ -50,6 +50,13 @@ internal class Preview: PreviewWrapper {
     
     private var initialized: Bool = false
     private var connectionInitialized: Bool = false
+    private var pageControl: NSSegmentedControl? = nil
+    private var realtimeContainer: NSStackView? = nil
+    private var analysisContainer: NSView? = nil
+    private var overviewContainer: NSView? = nil
+    private var currentPage: NetworkPreviewPage = NetworkPreviewPage(
+        storedRawValue: Store.shared.string(key: NetworkPreviewPage.storageKey, defaultValue: NetworkPreviewPage.realtime.rawValue)
+    )
     
     private var downloadColorState: SColor = .secondBlue
     private var downloadColor: NSColor {
@@ -79,20 +86,37 @@ internal class Preview: PreviewWrapper {
         super.init(type: module)
         
         self.loadColors()
-        
-        self.addArrangedSubview(PreferencesSection([self.usageView()]))
-        self.addArrangedSubview(PreferencesSection([self.historyView()]))
-        self.addArrangedSubview(PreferencesSection(title: localizedString("Connectivity history"), [self.connectivityView()]))
-        
+        self.addArrangedSubview(self.pageSelector())
+
+        let realtime = NSStackView()
+        realtime.orientation = .vertical
+        realtime.spacing = self.spacing
+        realtime.translatesAutoresizingMaskIntoConstraints = false
+        self.realtimeContainer = realtime
+
+        realtime.addArrangedSubview(PreferencesSection([self.usageView()]))
+        realtime.addArrangedSubview(PreferencesSection([self.historyView()]))
+        realtime.addArrangedSubview(PreferencesSection(title: localizedString("Connectivity history"), [self.connectivityView()]))
+
         let splitView = NSStackView()
         splitView.orientation = .horizontal
         splitView.distribution = .fillEqually
         splitView.alignment = .top
         splitView.addArrangedSubview(PreferencesSection(title: localizedString("Details"), [self.detailsView()]))
         splitView.addArrangedSubview(PreferencesSection(title: localizedString("Interface"), [self.interfaceView()]))
-        
-        self.addArrangedSubview(splitView)
-        self.addArrangedSubview(PreferencesSection(title: localizedString("Address"), [self.addressesView()]))
+
+        realtime.addArrangedSubview(splitView)
+        realtime.addArrangedSubview(PreferencesSection(title: localizedString("Address"), [self.addressesView()]))
+
+        let analysis = self.placeholderPage(title: localizedString("Traffic analysis"))
+        let overview = self.placeholderPage(title: localizedString("Usage overview"))
+        self.analysisContainer = analysis
+        self.overviewContainer = overview
+
+        self.addArrangedSubview(realtime)
+        self.addArrangedSubview(analysis)
+        self.addArrangedSubview(overview)
+        self.applyPage(self.currentPage)
     }
     
     required init?(coder: NSCoder) {
@@ -102,6 +126,53 @@ internal class Preview: PreviewWrapper {
     private func loadColors() {
         self.downloadColorState = SColor.fromString(Store.shared.string(key: "\(self.module.stringValue)_downloadColor", defaultValue: self.downloadColorState.key))
         self.uploadColorState = SColor.fromString(Store.shared.string(key: "\(self.module.stringValue)_uploadColor", defaultValue: self.uploadColorState.key))
+    }
+
+    private func pageSelector() -> NSView {
+        let container = NSStackView()
+        container.orientation = .horizontal
+        container.alignment = .centerY
+        container.distribution = .equalCentering
+
+        let control = NSSegmentedControl(
+            labels: NetworkPreviewPage.allCases.map(\.title),
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(self.pageChanged(_:))
+        )
+        control.segmentStyle = .texturedRounded
+        if let index = NetworkPreviewPage.allCases.firstIndex(of: self.currentPage) {
+            control.selectedSegment = index
+        }
+        self.pageControl = control
+        container.addArrangedSubview(control)
+        return container
+    }
+
+    private func placeholderPage(title: String) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        label.alignment = .center
+        label.textColor = .secondaryLabelColor
+        let box = NSStackView(views: [label])
+        box.orientation = .vertical
+        box.alignment = .centerX
+        box.edgeInsets = NSEdgeInsets(top: 40, left: 12, bottom: 40, right: 12)
+        box.isHidden = true
+        return box
+    }
+
+    @objc private func pageChanged(_ sender: NSSegmentedControl) {
+        let pages = NetworkPreviewPage.allCases
+        guard sender.selectedSegment >= 0, sender.selectedSegment < pages.count else { return }
+        self.applyPage(pages[sender.selectedSegment])
+    }
+
+    private func applyPage(_ page: NetworkPreviewPage) {
+        self.currentPage = page
+        Store.shared.set(key: NetworkPreviewPage.storageKey, value: page.rawValue)
+        self.realtimeContainer?.isHidden = page != .realtime
+        self.analysisContainer?.isHidden = page != .analysis
+        self.overviewContainer?.isHidden = page != .overview
     }
     
     private func usageView() -> NSView {

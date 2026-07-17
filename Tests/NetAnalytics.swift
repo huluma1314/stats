@@ -334,6 +334,14 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertNotNil(forecast.projectedBytes)
     }
 
+    func testPreviewPageFallsBackToRealtimeForInvalidValue() {
+        XCTAssertEqual(NetworkPreviewPage(storedRawValue: "analysis"), .analysis)
+        XCTAssertEqual(NetworkPreviewPage(storedRawValue: "overview"), .overview)
+        XCTAssertEqual(NetworkPreviewPage(storedRawValue: "realtime"), .realtime)
+        XCTAssertEqual(NetworkPreviewPage(storedRawValue: "nope"), .realtime)
+        XCTAssertEqual(NetworkPreviewPage(storedRawValue: nil), .realtime)
+    }
+
     func testCoordinatorBaselinesThenWritesDeltas() {
         let store = InMemoryTrafficStore()
         let repository = TrafficHistoryRepository(store: store)
