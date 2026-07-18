@@ -519,6 +519,11 @@
 "Real-time" = "Real-time";
 "Traffic analysis" = "Traffic analysis";
 "Usage overview" = "Usage overview";
+"All applications" = "All applications";
+"Live application traffic" = "Live application traffic";
+"Active processes" = "Active processes";
+"No active processes" = "No active processes";
+"Used this month" = "Used this month";
 "Line" = "Line";
 "Heatmap" = "Heatmap";
 "All networks" = "All networks";

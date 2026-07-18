@@ -519,6 +519,11 @@
 "Real-time" = "实时监控";
 "Traffic analysis" = "流量分析";
 "Usage overview" = "用量概览";
+"All applications" = "全部应用";
+"Live application traffic" = "实时应用速率";
+"Active processes" = "活跃进程";
+"No active processes" = "暂无活跃进程";
+"Used this month" = "本月已用";
 "Line" = "折线";
 "Heatmap" = "热力图";
 "All networks" = "全部网络";

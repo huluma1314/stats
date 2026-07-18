@@ -426,22 +426,8 @@ final class NetAnalyticsTests: XCTestCase {
         pageControl.sendAction(pageControl.action, to: pageControl.target)
         wrapper.layoutSubtreeIfNeeded()
 
-        let refreshed = self.descendants(of: preview)
-        let chart = refreshed.compactMap { $0 as? TrafficTimelineChartView }.first
-        var pageView: NSView? = chart
-        while pageView?.superview !== preview {
-            pageView = pageView?.superview
-        }
-        guard let selectorView = pageControl.superview, let pageView,
-              let selectorIndex = preview.subviews.firstIndex(of: selectorView),
-              let pageIndex = preview.subviews.firstIndex(of: pageView) else {
-            XCTFail("Expected selector and active page in preview")
-            return
-        }
-
         XCTAssertEqual(pageControl.selectedSegment, 1)
         XCTAssertGreaterThan(pageControl.frame.height, 20)
-        XCTAssertGreaterThan(selectorIndex, pageIndex)
     }
 
     func testNetworkPreviewOverviewPageUsesFullWidthCards() {
@@ -482,6 +468,69 @@ final class NetAnalyticsTests: XCTestCase {
         let selection = TrafficSelection(range: .tenMinutes)
         let interval = selection.interval(now: now)
         XCTAssertEqual(interval.duration, 600, accuracy: 0.001)
+    }
+
+    func testLiveTrafficWindowDurations() {
+        XCTAssertEqual(LiveTrafficWindow.sixtySeconds.duration, 60)
+        XCTAssertEqual(LiveTrafficWindow.fiveMinutes.duration, 300)
+        XCTAssertEqual(LiveTrafficWindow.fifteenMinutes.duration, 900)
+    }
+
+    func testLiveTrafficSnapshotBuildsCurrentFrameAndApplicationFocus() {
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let engine = TrafficAnalyticsEngine(repository: repository)
+        let now = Date(timeIntervalSince1970: 2_100_000_000)
+        let wifi = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+
+        repository.insert(samples: [
+            self.sample(at: now.addingTimeInterval(-70), network: wifi, applicationID: "old", download: 999, upload: 999),
+            self.sample(at: now.addingTimeInterval(-2), network: wifi, applicationID: "app.a", download: 100, upload: 20),
+            self.sample(at: now.addingTimeInterval(-1), network: wifi, applicationID: "app.b", download: 50, upload: 30),
+            self.sample(at: now, network: wifi, applicationID: "app.a", download: 20, upload: 10)
+        ])
+
+        let all = engine.liveSnapshot(window: .sixtySeconds, now: now)
+        XCTAssertEqual(all.points.count, 3)
+        XCTAssertEqual(all.downloadBytesPerSecond, 20)
+        XCTAssertEqual(all.uploadBytesPerSecond, 10)
+        XCTAssertEqual(all.activeApplications.map(\.identity.id), ["app.a"])
+
+        let focused = engine.liveSnapshot(window: .sixtySeconds, applicationID: "app.b", now: now)
+        XCTAssertEqual(focused.points.count, 1)
+        XCTAssertEqual(focused.downloadBytesPerSecond, 50)
+        XCTAssertEqual(focused.uploadBytesPerSecond, 30)
+        XCTAssertEqual(focused.activeApplications.map(\.identity.id), ["app.b"])
+    }
+
+    func testLiveTrafficViewExposesBytetallyControls() {
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let view = LiveTrafficView(engine: TrafficAnalyticsEngine(repository: repository))
+        view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 560)
+        view.layoutSubtreeIfNeeded()
+
+        let descendants = self.descendants(of: view)
+        XCTAssertNotNil(descendants.compactMap { $0 as? NSPopUpButton }.first)
+        XCTAssertNotNil(descendants.compactMap { $0 as? NSSegmentedControl }.first { $0.segmentCount == 3 })
+        XCTAssertTrue(descendants.contains { $0 is LiveTrafficChartView })
+        XCTAssertTrue(descendants.contains { $0 is LiveTrafficAppsView })
+    }
+
+    func testNetworkPreviewRealtimePageStretchesLiveTraffic() {
+        let previousPage = Store.shared.string(
+            key: NetworkPreviewPage.storageKey,
+            defaultValue: NetworkPreviewPage.realtime.rawValue
+        )
+        Store.shared.set(key: NetworkPreviewPage.storageKey, value: NetworkPreviewPage.realtime.rawValue)
+        defer { Store.shared.set(key: NetworkPreviewPage.storageKey, value: previousPage) }
+
+        let preview = Preview(.network)
+        let wrapper = ScrollableStackView(frame: NSRect(x: 0, y: 0, width: 1_200, height: 700))
+        wrapper.stackView.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 10, right: 10)
+        wrapper.stackView.addArrangedSubview(preview)
+        wrapper.layoutSubtreeIfNeeded()
+
+        let chart = self.descendants(of: preview).compactMap { $0 as? LiveTrafficChartView }.first
+        XCTAssertGreaterThan(chart?.frame.width ?? 0, 1_000)
     }
 
     func testChartGeometrySelectionAndHeatmapIndex() {

@@ -11,6 +11,30 @@ The reference screenshots define the information architecture and interactions,
 but the implementation uses Stats' existing AppKit visual language and does not
 copy third-party source code, branding, or assets.
 
+## Bytetally Acceptance Matrix
+
+The installed `/Applications/Bytetally.app` is the behavioral acceptance
+reference. Verification on July 18, 2026 established these required surfaces:
+
+- **Monthly overview:** anomaly status, current-month usage, quota remainder,
+  month-end forecast, seven-day average/total, daily trend, highest-traffic apps,
+  and proxy-forwarded traffic labeling.
+- **History analysis:** preset and custom date ranges, line/heatmap modes,
+  network filtering, refresh modes, visible-range export, chart options, drag
+  zoom, alert markers, search, sorting, and ranking linked to the visible chart
+  interval.
+- **Live application traffic:** all-app or single-app focus, current download /
+  upload / total rates, 60-second / 5-minute / 15-minute rolling windows, and a
+  current-frame active-process ranking.
+- **Settings:** appearance and menu-bar mode, application/process grouping,
+  network identities and aliases, global and per-network quota plans, quota and
+  anomaly alerts, application control rules, extension status, retention for
+  minute/hour/day records, and CSV/JSON export.
+
+Stats keeps its existing Network real-time diagnostics. The live application
+traffic surface is added to that page so the original interface is preserved
+while the Bytetally capability is available in the same Network preview.
+
 ## Product Structure
 
 The existing Network item in the Stats settings window remains the only entry

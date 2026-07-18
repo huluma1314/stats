@@ -60,6 +60,7 @@ internal class Preview: PreviewWrapper {
     private var pageWidthConstraint: NSLayoutConstraint? = nil
     private var analysisView: TrafficAnalysisView? = nil
     private var overviewView: TrafficOverviewView? = nil
+    private var liveTrafficView: LiveTrafficView? = nil
     private var outerWidthConstraint: NSLayoutConstraint? = nil
     private let analyticsRepository = TrafficHistoryRepository(store: LevelDBTrafficStore())
     private lazy var analyticsEngine = TrafficAnalyticsEngine(repository: self.analyticsRepository)
@@ -111,6 +112,11 @@ internal class Preview: PreviewWrapper {
         realtime.spacing = self.spacing
         realtime.translatesAutoresizingMaskIntoConstraints = false
         self.realtimeContainer = realtime
+
+        let liveTraffic = LiveTrafficView(engine: self.analyticsEngine)
+        self.liveTrafficView = liveTraffic
+        realtime.addArrangedSubview(liveTraffic)
+        liveTraffic.widthAnchor.constraint(equalTo: realtime.widthAnchor).isActive = true
 
         realtime.addArrangedSubview(PreferencesSection([self.usageView()]))
         realtime.addArrangedSubview(PreferencesSection([self.historyView()]))

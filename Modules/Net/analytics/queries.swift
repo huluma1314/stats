@@ -5,6 +5,58 @@
 
 import Foundation
 
+public enum LiveTrafficWindow: Int, CaseIterable, Codable {
+    case sixtySeconds = 60
+    case fiveMinutes = 300
+    case fifteenMinutes = 900
+
+    public var duration: TimeInterval { TimeInterval(self.rawValue) }
+}
+
+public struct LiveTrafficPoint: Codable, Equatable {
+    public let timestamp: Date
+    public let download: UInt64
+    public let upload: UInt64
+
+    public init(timestamp: Date, download: UInt64, upload: UInt64) {
+        self.timestamp = timestamp
+        self.download = download
+        self.upload = upload
+    }
+}
+
+public struct LiveTrafficSnapshot: Codable, Equatable {
+    public let window: LiveTrafficWindow
+    public let applicationID: String?
+    public let downloadBytesPerSecond: UInt64
+    public let uploadBytesPerSecond: UInt64
+    public let points: [LiveTrafficPoint]
+    public let applications: [ApplicationTrafficSummary]
+    public let activeApplications: [ApplicationTrafficSummary]
+
+    public var totalBytesPerSecond: UInt64 {
+        self.downloadBytesPerSecond + self.uploadBytesPerSecond
+    }
+
+    public init(
+        window: LiveTrafficWindow,
+        applicationID: String?,
+        downloadBytesPerSecond: UInt64,
+        uploadBytesPerSecond: UInt64,
+        points: [LiveTrafficPoint],
+        applications: [ApplicationTrafficSummary],
+        activeApplications: [ApplicationTrafficSummary]
+    ) {
+        self.window = window
+        self.applicationID = applicationID
+        self.downloadBytesPerSecond = downloadBytesPerSecond
+        self.uploadBytesPerSecond = uploadBytesPerSecond
+        self.points = points
+        self.applications = applications
+        self.activeApplications = activeApplications
+    }
+}
+
 public struct TrafficForecast: Codable, Equatable {
     public enum State: String, Codable, Equatable {
         case ready
@@ -156,6 +208,59 @@ public final class TrafficAnalyticsEngine {
             buckets: buckets,
             ranking: ranking,
             forecast: forecast
+        )
+    }
+
+    public func liveSnapshot(
+        window: LiveTrafficWindow,
+        applicationID: String? = nil,
+        now: Date = Date()
+    ) -> LiveTrafficSnapshot {
+        let start = now.addingTimeInterval(-window.duration)
+        var samples = self.repository.fetch(
+            TrafficHistoryQuery(level: .second, start: start, end: now)
+        )
+        samples = self.deduplicate(samples)
+        if let applicationID {
+            samples = samples.filter { $0.application.id == applicationID }
+        }
+
+        var grouped: [Int64: (download: UInt64, upload: UInt64)] = [:]
+        for sample in samples {
+            let second = Int64(sample.timestamp.timeIntervalSince1970.rounded(.down))
+            var value = grouped[second] ?? (0, 0)
+            value.download += sample.delta.download
+            value.upload += sample.delta.upload
+            grouped[second] = value
+        }
+        let points = grouped.keys.sorted().map { second in
+            let value = grouped[second]!
+            return LiveTrafficPoint(
+                timestamp: Date(timeIntervalSince1970: TimeInterval(second)),
+                download: value.download,
+                upload: value.upload
+            )
+        }
+
+        let latestSecond = points.last.map { Int64($0.timestamp.timeIntervalSince1970) }
+        let activeSamples: [TrafficSample]
+        if let latestSecond {
+            activeSamples = samples.filter {
+                Int64($0.timestamp.timeIntervalSince1970.rounded(.down)) == latestSecond
+            }
+        } else {
+            activeSamples = []
+        }
+        let latest = points.last
+
+        return LiveTrafficSnapshot(
+            window: window,
+            applicationID: applicationID,
+            downloadBytesPerSecond: latest?.download ?? 0,
+            uploadBytesPerSecond: latest?.upload ?? 0,
+            points: points,
+            applications: self.rank(samples: samples),
+            activeApplications: self.rank(samples: activeSamples)
         )
     }
 
