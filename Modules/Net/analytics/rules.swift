@@ -67,6 +67,70 @@ public struct ApplicationTrafficRule: Codable, Equatable {
     }
 }
 
+public struct TrafficAnalyticsPreferences: Codable, Equatable {
+    public var quotaAlertsEnabled: Bool
+    public var anomalyDetectionEnabled: Bool
+    public var overQuotaAction: QuotaAction
+    public var minuteRetentionDays: Int
+    public var hourRetentionDays: Int
+    public var dayRetentionDays: Int
+    public var sustainedUploadBytesPerSecond: UInt64
+    public var anomalyMultiplier: Double
+
+    public static let `default` = TrafficAnalyticsPreferences(
+        quotaAlertsEnabled: true,
+        anomalyDetectionEnabled: false,
+        overQuotaAction: .notify,
+        minuteRetentionDays: 7,
+        hourRetentionDays: 60,
+        dayRetentionDays: 730,
+        sustainedUploadBytesPerSecond: 1_000_000,
+        anomalyMultiplier: 3
+    )
+
+    public init(
+        quotaAlertsEnabled: Bool,
+        anomalyDetectionEnabled: Bool,
+        overQuotaAction: QuotaAction,
+        minuteRetentionDays: Int,
+        hourRetentionDays: Int,
+        dayRetentionDays: Int,
+        sustainedUploadBytesPerSecond: UInt64,
+        anomalyMultiplier: Double
+    ) {
+        self.quotaAlertsEnabled = quotaAlertsEnabled
+        self.anomalyDetectionEnabled = anomalyDetectionEnabled
+        self.overQuotaAction = overQuotaAction
+        self.minuteRetentionDays = max(1, minuteRetentionDays)
+        self.hourRetentionDays = max(1, hourRetentionDays)
+        self.dayRetentionDays = max(1, dayRetentionDays)
+        self.sustainedUploadBytesPerSecond = sustainedUploadBytesPerSecond
+        self.anomalyMultiplier = max(1, anomalyMultiplier)
+    }
+}
+
+public final class TrafficAnalyticsPreferencesStore {
+    public static let storageKey = "net.analytics.preferences.v1"
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    public func preferences() -> TrafficAnalyticsPreferences {
+        guard let data = self.defaults.data(forKey: Self.storageKey),
+              let value = try? JSONDecoder().decode(TrafficAnalyticsPreferences.self, from: data) else {
+            return .default
+        }
+        return value
+    }
+
+    public func save(_ preferences: TrafficAnalyticsPreferences) {
+        guard let data = try? JSONEncoder().encode(preferences) else { return }
+        self.defaults.set(data, forKey: Self.storageKey)
+    }
+}
+
 public struct RuleEvaluation: Equatable {
     public let triggeredThresholds: [Int]
     public let action: QuotaAction?

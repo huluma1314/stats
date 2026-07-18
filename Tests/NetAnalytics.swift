@@ -683,6 +683,27 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertFalse(TrafficRuleEngine.validate(billingCycleDay: 0, byteLimit: 1, thresholds: [80, 70]))
     }
 
+    func testTrafficAnalyticsPreferencesPersistBytetallySettings() {
+        let suite = UserDefaults(suiteName: "net.analytics.preferences.tests")!
+        suite.removePersistentDomain(forName: "net.analytics.preferences.tests")
+        let store = TrafficAnalyticsPreferencesStore(defaults: suite)
+        var preferences = store.preferences()
+        XCTAssertTrue(preferences.quotaAlertsEnabled)
+        XCTAssertEqual(preferences.minuteRetentionDays, 7)
+
+        preferences.quotaAlertsEnabled = false
+        preferences.anomalyDetectionEnabled = true
+        preferences.overQuotaAction = .rateLimit
+        preferences.minuteRetentionDays = 14
+        store.save(preferences)
+
+        let reloaded = store.preferences()
+        XCTAssertFalse(reloaded.quotaAlertsEnabled)
+        XCTAssertTrue(reloaded.anomalyDetectionEnabled)
+        XCTAssertEqual(reloaded.overQuotaAction, .rateLimit)
+        XCTAssertEqual(reloaded.minuteRetentionDays, 14)
+    }
+
     func testUnavailableEnforcerNeverSucceeds() {
         let enforcer = UnavailableNetworkRuleEnforcer()
         XCTAssertEqual(enforcer.capability, .unavailable(.missingEntitlement))

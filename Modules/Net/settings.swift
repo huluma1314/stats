@@ -77,6 +77,7 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
     private var includeLocalNetwork: Bool = true
     private var billingCycleDay: Int = 1
     private var networkQuotaGB: Int = 0
+    private var analyticsPreferences: TrafficAnalyticsPreferences = .default
     
     public var callback: (() -> Void) = {}
     public var callbackWhenUpdateNumberOfProcesses: (() -> Void) = {}
@@ -91,6 +92,7 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
     private var widgetThresholdSection: PreferencesSection? = nil
     private let textWidgetHelpPanel: HelpHUD = HelpHUD(textWidgetHelp)
     private let ruleStore = TrafficRuleStore()
+    private let analyticsPreferencesStore = TrafficAnalyticsPreferencesStore()
     
     private var list: [Network_interface] = []
     
@@ -127,6 +129,7 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
         if let limit = plan.byteLimit {
             self.networkQuotaGB = Int(limit / 1_000_000_000)
         }
+        self.analyticsPreferences = self.analyticsPreferencesStore.preferences()
         
         super.init(frame: NSRect.zero)
         self.orientation = .vertical
@@ -181,6 +184,50 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
             )),
             PreferencesRow(localizedString("Enforcement"), component: NSTextField(labelWithString: enforcementText)),
             PreferencesRow(localizedString("History"), component: clearButton)
+        ]))
+
+        self.addArrangedSubview(PreferencesSection(title: localizedString("Alerts and automation"), [
+            PreferencesRow(localizedString("Quota notifications"), component: switchView(
+                action: #selector(self.toggleQuotaAlerts),
+                state: self.analyticsPreferences.quotaAlertsEnabled
+            )),
+            PreferencesRow(localizedString("Anomaly detection"), component: switchView(
+                action: #selector(self.toggleAnomalyDetection),
+                state: self.analyticsPreferences.anomalyDetectionEnabled
+            )),
+            PreferencesRow(localizedString("Sustained upload threshold"), component: selectView(
+                action: #selector(self.changeSustainedUploadThreshold),
+                items: [1, 5, 10, 50].map { KeyValue_t(key: "\($0)", value: "\($0) MB/s") },
+                selected: "\(max(1, self.analyticsPreferences.sustainedUploadBytesPerSecond / 1_000_000))"
+            )),
+            PreferencesRow(localizedString("Anomaly multiplier"), component: selectView(
+                action: #selector(self.changeAnomalyMultiplier),
+                items: [2, 3, 5, 10].map { KeyValue_t(key: "\($0)", value: "\($0)×") },
+                selected: "\(Int(self.analyticsPreferences.anomalyMultiplier))"
+            )),
+            PreferencesRow(localizedString("Over-quota action"), component: selectView(
+                action: #selector(self.changeOverQuotaAction),
+                items: QuotaAction.allCases.map { KeyValue_t(key: $0.rawValue, value: self.quotaActionTitle($0)) },
+                selected: self.analyticsPreferences.overQuotaAction.rawValue
+            ))
+        ]))
+
+        self.addArrangedSubview(PreferencesSection(title: localizedString("Analytics retention"), [
+            PreferencesRow(localizedString("Minute records"), component: selectView(
+                action: #selector(self.changeMinuteRetention),
+                items: [1, 3, 7, 14, 30].map { KeyValue_t(key: "\($0)", value: "\($0) d") },
+                selected: "\(self.analyticsPreferences.minuteRetentionDays)"
+            )),
+            PreferencesRow(localizedString("Hourly records"), component: selectView(
+                action: #selector(self.changeHourRetention),
+                items: [7, 30, 60, 90, 180].map { KeyValue_t(key: "\($0)", value: "\($0) d") },
+                selected: "\(self.analyticsPreferences.hourRetentionDays)"
+            )),
+            PreferencesRow(localizedString("Daily records"), component: selectView(
+                action: #selector(self.changeDayRetention),
+                items: [30, 180, 365, 730, 1_825].map { KeyValue_t(key: "\($0)", value: "\($0) d") },
+                selected: "\(self.analyticsPreferences.dayRetentionDays)"
+            ))
         ]))
         
         let interfaces = selectView(
@@ -447,6 +494,61 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
         var plan = self.ruleStore.networkPlan()
         plan.byteLimit = value == 0 ? nil : UInt64(value) * 1_000_000_000
         self.ruleStore.save(networkPlan: plan)
+    }
+
+    @objc private func toggleQuotaAlerts(_ sender: NSControl) {
+        self.analyticsPreferences.quotaAlertsEnabled = controlState(sender)
+        self.analyticsPreferencesStore.save(self.analyticsPreferences)
+    }
+
+    @objc private func toggleAnomalyDetection(_ sender: NSControl) {
+        self.analyticsPreferences.anomalyDetectionEnabled = controlState(sender)
+        self.analyticsPreferencesStore.save(self.analyticsPreferences)
+    }
+
+    @objc private func changeSustainedUploadThreshold(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, let value = UInt64(key) else { return }
+        self.analyticsPreferences.sustainedUploadBytesPerSecond = value * 1_000_000
+        self.analyticsPreferencesStore.save(self.analyticsPreferences)
+    }
+
+    @objc private func changeAnomalyMultiplier(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, let value = Double(key) else { return }
+        self.analyticsPreferences.anomalyMultiplier = value
+        self.analyticsPreferencesStore.save(self.analyticsPreferences)
+    }
+
+    @objc private func changeOverQuotaAction(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String,
+              let action = QuotaAction(rawValue: key) else { return }
+        self.analyticsPreferences.overQuotaAction = action
+        self.analyticsPreferencesStore.save(self.analyticsPreferences)
+    }
+
+    @objc private func changeMinuteRetention(_ sender: NSMenuItem) {
+        self.updateRetention(sender, keyPath: \TrafficAnalyticsPreferences.minuteRetentionDays)
+    }
+
+    @objc private func changeHourRetention(_ sender: NSMenuItem) {
+        self.updateRetention(sender, keyPath: \TrafficAnalyticsPreferences.hourRetentionDays)
+    }
+
+    @objc private func changeDayRetention(_ sender: NSMenuItem) {
+        self.updateRetention(sender, keyPath: \TrafficAnalyticsPreferences.dayRetentionDays)
+    }
+
+    private func updateRetention(_ sender: NSMenuItem, keyPath: WritableKeyPath<TrafficAnalyticsPreferences, Int>) {
+        guard let key = sender.representedObject as? String, let value = Int(key) else { return }
+        self.analyticsPreferences[keyPath: keyPath] = value
+        self.analyticsPreferencesStore.save(self.analyticsPreferences)
+    }
+
+    private func quotaActionTitle(_ action: QuotaAction) -> String {
+        switch action {
+        case .notify: return localizedString("Notify")
+        case .rateLimit: return localizedString("Rate limit")
+        case .block: return localizedString("Block")
+        }
     }
 
     @objc private func clearAnalyticsHistory() {
