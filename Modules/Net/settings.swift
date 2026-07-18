@@ -85,7 +85,7 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
     public var connectivityHostCallback: ((_ newState: Bool) -> Void) = { _ in }
     public var setInterval: ((_ value: Int) -> Void) = {_ in }
     public var publicIPRefreshIntervalCallback: (() -> Void) = {}
-    public var clearAnalyticsHistoryCallback: (() -> Void) = {}
+    public var clearAnalyticsHistoryCallback: (() throws -> Void) = {}
     
     private let title: String
     private var section: PreferencesSection? = nil
@@ -551,6 +551,10 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
         }
     }
 
+    func performAnalyticsClear() throws {
+        try self.clearAnalyticsHistoryCallback()
+    }
+
     @objc private func clearAnalyticsHistory() {
         let alert = NSAlert()
         alert.messageText = localizedString("Clear analytics history")
@@ -559,8 +563,10 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
         alert.addButton(withTitle: localizedString("Clear"))
         alert.addButton(withTitle: localizedString("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        TrafficHistoryRepository(store: LevelDBTrafficStore()).deleteAll()
-        TrafficAlertStore().clear()
-        self.clearAnalyticsHistoryCallback()
+        do {
+            try self.performAnalyticsClear()
+        } catch {
+            NSAlert(error: error).runModal()
+        }
     }
 }

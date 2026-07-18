@@ -99,9 +99,26 @@ public class DB {
         return self.values[key] as? T
     }
 
+    public enum RawWriteError: Error, Equatable {
+        case unavailable
+        case failed
+        case duplicateKey(String)
+    }
+
     public func putRaw(key: String, value: String) {
-        self.queue.sync {
-            _ = self.lldb?.insert(key, value: value)
+        try? self.writeRawAtomically(puts: [(key, value)], deletes: [])
+    }
+
+    public func writeRawAtomically(puts: [(key: String, value: String)], deletes: [String]) throws {
+        try self.queue.sync {
+            guard let lldb = self.lldb else { throw RawWriteError.unavailable }
+            var values: [String: String] = [:]
+            for put in puts {
+                guard values.updateValue(put.value, forKey: put.key) == nil else {
+                    throw RawWriteError.duplicateKey(put.key)
+                }
+            }
+            guard lldb.writeBatch(values, deletes: deletes) else { throw RawWriteError.failed }
         }
     }
 

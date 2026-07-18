@@ -7,13 +7,35 @@ import Foundation
 
 public struct TrafficCollectorSnapshot: Equatable {
     public let samplesWritten: Int
+    public let pendingSamples: Int
     public let lastError: String?
     public let isCollecting: Bool
+    public let isHistoryEnabled: Bool
 
-    public init(samplesWritten: Int, lastError: String?, isCollecting: Bool) {
+    public init(
+        samplesWritten: Int,
+        pendingSamples: Int,
+        lastError: String?,
+        isCollecting: Bool,
+        isHistoryEnabled: Bool
+    ) {
         self.samplesWritten = samplesWritten
+        self.pendingSamples = pendingSamples
         self.lastError = lastError
         self.isCollecting = isCollecting
+        self.isHistoryEnabled = isHistoryEnabled
+    }
+}
+
+public struct TrafficPersistencePolicy: Equatable {
+    public let maxPendingSamples: Int
+    public let maxConsecutiveFailures: Int
+
+    public init(maxPendingSamples: Int = 256, maxConsecutiveFailures: Int = 3) {
+        precondition(maxPendingSamples > 0)
+        precondition(maxConsecutiveFailures > 0)
+        self.maxPendingSamples = maxPendingSamples
+        self.maxConsecutiveFailures = maxConsecutiveFailures
     }
 }
 
@@ -31,6 +53,7 @@ public final class TrafficAnalyticsCoordinator {
     private let resolver: ApplicationIdentityResolver
     private let clock: TrafficClock
     private let queue: DispatchQueue
+    private let persistencePolicy: TrafficPersistencePolicy
 
     private var previousCounters: [String: ProcessTrafficCounter] = [:]
     private var currentNetwork = NetworkIdentity(
@@ -42,32 +65,39 @@ public final class TrafficAnalyticsCoordinator {
     private var samplesWritten = 0
     private var lastError: String?
     private var isCollecting = false
-    private var consecutiveFailures = 0
+    private var isHistoryEnabled = true
+    private var consecutivePersistenceFailures = 0
     private var pendingSamples: [TrafficSample] = []
 
     public init(
         repository: TrafficHistoryRepository,
         resolver: ApplicationIdentityResolver = ApplicationIdentityResolver(provider: AppKitProcessMetadataProvider()),
         clock: TrafficClock = SystemTrafficClock(),
-        queue: DispatchQueue = DispatchQueue(label: "eu.exelban.Stats.Net.analytics.coordinator")
+        queue: DispatchQueue = DispatchQueue(label: "eu.exelban.Stats.Net.analytics.coordinator"),
+        persistencePolicy: TrafficPersistencePolicy = TrafficPersistencePolicy()
     ) {
         self.repository = repository
         self.resolver = resolver
         self.clock = clock
         self.queue = queue
+        self.persistencePolicy = persistencePolicy
     }
 
     public func start() {
         self.queue.sync {
             self.isCollecting = true
-            self.lastError = nil
+            if self.isHistoryEnabled {
+                self.lastError = nil
+            }
         }
     }
 
-    public func stop() {
+    @discardableResult
+    public func stop() -> Bool {
         self.queue.sync {
-            self.flushLocked()
+            let persisted = self.flushLocked()
             self.isCollecting = false
+            return persisted
         }
     }
 
@@ -86,7 +116,8 @@ public final class TrafficAnalyticsCoordinator {
             var next: [String: ProcessTrafficCounter] = [:]
 
             for counter in counters {
-                let lifetime = "\(counter.processID):\(counter.processStartToken)"
+                let interfaceName = counter.interfaceName
+                let lifetime = "\(counter.processDiscriminator)|\(interfaceName ?? "")"
                 let identity = self.resolver.identity(
                     processID: counter.processID,
                     fallbackName: counter.identity.displayName
@@ -95,22 +126,34 @@ public final class TrafficAnalyticsCoordinator {
                     identity: identity,
                     processID: counter.processID,
                     processStartToken: counter.processStartToken,
+                    processDiscriminator: counter.processDiscriminator,
+                    interfaceName: interfaceName,
+                    isDelta: counter.isDelta,
                     download: counter.download,
                     upload: counter.upload
                 )
                 next[lifetime] = normalized
 
                 let previous = self.previousCounters[lifetime]
-                let delta = TrafficDeltaCalculator.delta(from: previous, to: normalized)
-                guard previous != nil else { continue }
+                let delta: TrafficDelta
+                if normalized.isDelta {
+                    delta = TrafficDelta(download: normalized.download, upload: normalized.upload)
+                } else {
+                    delta = TrafficDeltaCalculator.delta(from: previous, to: normalized)
+                    guard previous != nil else { continue }
+                }
                 guard delta.total > 0 else { continue }
 
+                let network = interfaceName.map { self.networkIdentity(interfaceName: $0) } ?? self.currentNetwork
                 produced.append(
                     TrafficSample(
                         timestamp: timestamp,
                         application: identity,
-                        network: self.currentNetwork,
+                        network: network,
                         processID: counter.processID,
+                        processName: counter.identity.displayName,
+                        processStartToken: counter.processStartToken,
+                        processDiscriminator: counter.processDiscriminator,
                         delta: delta,
                         peakBytesPerSecond: delta.total
                     )
@@ -118,42 +161,51 @@ public final class TrafficAnalyticsCoordinator {
             }
 
             self.previousCounters = next
-            if !produced.isEmpty {
-                self.repository.insert(samples: produced)
-                self.samplesWritten += produced.count
-                self.pendingSamples.removeAll()
+            guard self.isHistoryEnabled else { return }
+
+            let availableCapacity = max(0, self.persistencePolicy.maxPendingSamples - self.pendingSamples.count)
+            let accepted = Array(produced.prefix(availableCapacity))
+            let dropped = produced.count - accepted.count
+            let samples = self.pendingSamples + accepted
+            guard dropped == 0 else {
+                self.disableHistoryLocked(
+                    reason: "Traffic history disabled after pending buffer reached \(self.persistencePolicy.maxPendingSamples) samples",
+                    droppedSamples: samples.count + dropped
+                )
+                return
             }
-            self.consecutiveFailures = 0
-            self.lastError = nil
+            guard !samples.isEmpty else {
+                self.lastError = nil
+                return
+            }
+
+            self.persistLocked(samples)
         }
     }
 
     public func recordFailure(_ message: String) {
         self.queue.sync {
-            self.consecutiveFailures += 1
+            guard self.isHistoryEnabled else { return }
             self.lastError = message
         }
     }
 
-    public func shouldSkipRead(at date: Date = Date()) -> Bool {
-        self.queue.sync {
-            // Bounded exponential backoff after failures: 1s, 2s, 4s... capped at 30s.
-            // Callers can use consecutiveFailures for sleep; coordinator itself is pull-based.
-            return false
-        }
-    }
-
-    public func backoffSeconds() -> TimeInterval {
-        self.queue.sync {
-            guard self.consecutiveFailures > 0 else { return 0 }
-            let exp = min(self.consecutiveFailures - 1, 5)
-            return min(30, pow(2.0, Double(exp)))
-        }
-    }
-
-    public func flush() {
+    @discardableResult
+    public func flush() -> Bool {
         self.queue.sync {
             self.flushLocked()
+        }
+    }
+
+    public func clearAnalyticsData() throws {
+        try self.queue.sync {
+            try self.repository.clearAnalyticsData()
+            self.previousCounters.removeAll()
+            self.pendingSamples.removeAll()
+            self.samplesWritten = 0
+            self.consecutivePersistenceFailures = 0
+            self.isHistoryEnabled = true
+            self.lastError = nil
         }
     }
 
@@ -161,8 +213,10 @@ public final class TrafficAnalyticsCoordinator {
         self.queue.sync {
             TrafficCollectorSnapshot(
                 samplesWritten: self.samplesWritten,
+                pendingSamples: self.pendingSamples.count,
                 lastError: self.lastError,
-                isCollecting: self.isCollecting
+                isCollecting: self.isCollecting,
+                isHistoryEnabled: self.isHistoryEnabled
             )
         }
     }
@@ -210,10 +264,53 @@ public final class TrafficAnalyticsCoordinator {
         return .other
     }
 
-    private func flushLocked() {
-        guard !self.pendingSamples.isEmpty else { return }
-        self.repository.insert(samples: self.pendingSamples)
-        self.samplesWritten += self.pendingSamples.count
+    private func networkIdentity(interfaceName: String) -> NetworkIdentity {
+        if interfaceName == self.currentNetwork.interfaceName {
+            return self.currentNetwork
+        }
+        let kind = Self.networkKind(interfaceName: interfaceName, displayName: interfaceName, wifiSSID: nil)
+        return NetworkIdentity(
+            id: "iface:\(interfaceName)",
+            displayName: interfaceName,
+            interfaceName: interfaceName,
+            kind: kind
+        )
+    }
+
+    @discardableResult
+    private func flushLocked() -> Bool {
+        guard self.isHistoryEnabled else { return false }
+        guard !self.pendingSamples.isEmpty else { return true }
+        return self.persistLocked(self.pendingSamples)
+    }
+
+    @discardableResult
+    private func persistLocked(_ samples: [TrafficSample]) -> Bool {
+        switch self.repository.ingest(samples) {
+        case .success(let batch):
+            self.samplesWritten += batch.samples.count
+            self.pendingSamples.removeAll()
+            self.consecutivePersistenceFailures = 0
+            self.lastError = nil
+            return true
+        case .failure(let persistenceError):
+            self.consecutivePersistenceFailures += 1
+            self.pendingSamples = samples
+            if self.consecutivePersistenceFailures >= self.persistencePolicy.maxConsecutiveFailures {
+                self.disableHistoryLocked(
+                    reason: "Traffic history disabled after \(self.consecutivePersistenceFailures) persistence failures: \(persistenceError.description)",
+                    droppedSamples: self.pendingSamples.count
+                )
+            } else {
+                self.lastError = "Traffic history persistence failed (attempt \(self.consecutivePersistenceFailures)/\(self.persistencePolicy.maxConsecutiveFailures)): \(persistenceError.description)"
+            }
+            return false
+        }
+    }
+
+    private func disableHistoryLocked(reason: String, droppedSamples: Int) {
         self.pendingSamples.removeAll()
+        self.isHistoryEnabled = false
+        self.lastError = "\(reason); dropped \(droppedSamples) sample\(droppedSamples == 1 ? "" : "s")"
     }
 }

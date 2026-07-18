@@ -261,4 +261,10 @@ public final class TrafficRuleStore {
         map[scope] = []
         self.defaults.set(map, forKey: Self.notifiedThresholdsKey)
     }
+
+    public func clearRuntimeState() {
+        self.defaults.removeObject(forKey: Self.notifiedThresholdsKey)
+        self.defaults.removeObject(forKey: "net.analytics.runtime.cooldowns.v1")
+        self.defaults.removeObject(forKey: "net.analytics.runtime.thresholds.v1")
+    }
 }

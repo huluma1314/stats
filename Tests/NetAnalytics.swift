@@ -32,6 +32,25 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(TrafficDeltaCalculator.delta(from: previous, to: current), .zero)
     }
 
+    func testDeltaCalculatesDirectionResetsIndependently() {
+        let previous = self.counter(startToken: 1, download: 900, upload: 500)
+
+        XCTAssertEqual(
+            TrafficDeltaCalculator.delta(
+                from: previous,
+                to: self.counter(startToken: 1, download: 100, upload: 650)
+            ),
+            TrafficDelta(download: 0, upload: 150)
+        )
+        XCTAssertEqual(
+            TrafficDeltaCalculator.delta(
+                from: previous,
+                to: self.counter(startToken: 1, download: 1_200, upload: 50)
+            ),
+            TrafficDelta(download: 300, upload: 0)
+        )
+    }
+
     func testDeltaIgnoresReusedProcessIdentifier() {
         let previous = self.counter(startToken: 1, download: 900, upload: 500)
         let current = self.counter(startToken: 2, download: 1_200, upload: 650)
@@ -82,6 +101,67 @@ final class NetAnalyticsTests: XCTestCase {
         let result = NettopSnapshotParser.parse(csv: ",bytes_in,bytes_out,\n")
         XCTAssertEqual(result.rows, [])
         XCTAssertEqual(result.malformedRowCount, 0)
+    }
+
+    func testNettopParserDoesNotTreatIPv6EndpointPortAsProcessParent() {
+        let csv = """
+        ,interface,bytes_in,bytes_out,
+        Browser Helper.55,,100,20,
+        tcp6 fe80::1.61234<->2606:4700:4700::1111.443,en0,10,2,
+        """
+
+        let result = NettopSnapshotParser.parse(csv: csv)
+        XCTAssertEqual(result.malformedRowCount, 0)
+        XCTAssertEqual(result.rows.count, 2)
+        XCTAssertEqual(result.rows[1].processID, 55)
+        XCTAssertEqual(result.rows[1].processName, "Browser Helper")
+        XCTAssertEqual(result.rows[1].connectionID, "tcp6 fe80::1.61234<->2606:4700:4700::1111.443")
+        XCTAssertFalse(result.rows[1].isProcessSummary)
+    }
+
+    func testNettopParserRecognizesOnlyExactConnectionProtocolTokens() {
+        let csv = """
+        ,interface,bytes_in,bytes_out,
+        tcpdump.123,,100,20,
+        tcp4 a<->b,en0,10,2,
+        tcp6 a<->b,en0,11,3,
+        udp4 a<->b,en0,12,4,
+        udp6 a<->b,en0,13,5,
+        quic a<->b,en0,14,6,
+        """
+
+        let result = NettopSnapshotParser.parse(csv: csv)
+        XCTAssertEqual(result.malformedRowCount, 0)
+        XCTAssertEqual(result.rows.count, 6)
+        guard let parent = result.rows.first else { return }
+        XCTAssertEqual(parent.processName, "tcpdump")
+        XCTAssertEqual(parent.processID, 123)
+        XCTAssertTrue(parent.isProcessSummary)
+        XCTAssertTrue(result.rows.dropFirst().allSatisfy { $0.processName == "tcpdump" && !$0.isProcessSummary })
+    }
+
+    func testNettopParserKeepsExactRowsOnDistinctConcreteInterfaces() {
+        let csv = """
+        ,interface,bytes_in,bytes_out,
+        Client.55,,100,20,
+        tcp4 a<->b,en0,10,2,
+        tcp4 a<->b,utun3,10,2,
+        """
+
+        let rows = NettopSnapshotParser.parse(csv: csv).rows.filter { !$0.isProcessSummary }
+        XCTAssertEqual(rows.map(\.interfaceName), ["en0", "utun3"])
+    }
+
+    func testNettopParserRemovesUnattributedExactDuplicateWhenAttributedRowExists() {
+        let csv = """
+        ,interface,bytes_in,bytes_out,
+        Client.55,,100,20,
+        tcp4 a<->b,,10,2,
+        tcp4 a<->b,en0,10,2,
+        """
+
+        let rows = NettopSnapshotParser.parse(csv: csv).rows.filter { !$0.isProcessSummary }
+        XCTAssertEqual(rows.map(\.interfaceName), ["en0"])
     }
 
     func testIdentityGroupsHelpersUnderOwningBundle() {
@@ -215,9 +295,10 @@ final class NetAnalyticsTests: XCTestCase {
                 level: .second,
                 timestamp: t0,
                 networkID: network.id,
-                applicationID: "app.a"
+                applicationID: "app.a",
+                processDiscriminator: samples[1].processDiscriminator
             ),
-            "net.analytics.v1|second|00000000001721234567|wifi-home|app.a"
+            "net.analytics.v2|second|00000000001721234567|wifi-home|app.a|app.a%7C1%7C1"
         )
     }
 
@@ -287,6 +368,111 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(snapshot.ranking.map(\.identity.id), ["app.a", "app.b"])
         XCTAssertEqual(snapshot.ranking[0].download, 150)
         XCTAssertFalse(snapshot.buckets.isEmpty)
+    }
+
+    func testRawRankingKeepsPIDReuseLifetimesDistinctAfterRestart() {
+        let store = RecordingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let wifi = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = Date(timeIntervalSince1970: 1_721_234_700)
+        let firstLifetime = self.sample(
+            at: now.addingTimeInterval(-2),
+            network: wifi,
+            applicationID: "app.owner",
+            processID: 77,
+            processName: "Helper",
+            processStartToken: 101,
+            download: 10,
+            upload: 2
+        )
+        let secondLifetime = self.sample(
+            at: now.addingTimeInterval(-1),
+            network: wifi,
+            applicationID: "app.owner",
+            processID: 77,
+            processName: "Helper",
+            processStartToken: 202,
+            download: 25,
+            upload: 5
+        )
+        XCTAssertSuccess(repository.ingest([firstLifetime, secondLifetime]))
+
+        let snapshot = TrafficAnalyticsEngine(repository: TrafficHistoryRepository(store: store)).snapshot(
+            for: TrafficAnalyticsQuery(range: .tenMinutes, now: now)
+        )
+
+        XCTAssertEqual(snapshot.total, 42)
+        XCTAssertEqual(snapshot.ranking.map(\.total), [42])
+        XCTAssertEqual(snapshot.ranking[0].processes.count, 2)
+        XCTAssertEqual(
+            Set(snapshot.ranking[0].processes.compactMap(\.processDiscriminator)),
+            Set([firstLifetime.processDiscriminator, secondLifetime.processDiscriminator])
+        )
+        XCTAssertEqual(snapshot.ranking[0].processes.reduce(UInt64(0)) { $0 + $1.download + $1.upload }, 42)
+    }
+
+    func testRawRankingFallsBackToPIDForLegacySamplesWithoutDiscriminator() throws {
+        let networkJSON = """
+        {
+          "id": "wifi",
+          "displayName": "Wi-Fi",
+          "interfaceName": "en0",
+          "kind": "wifi"
+        }
+        """
+        let sampleJSON: (String, UInt64, UInt64) -> String = { timestamp, download, upload in
+            """
+            {
+              "timestamp": "\(timestamp)",
+              "application": {
+                "id": "legacy.owner",
+                "displayName": "legacy.owner",
+                "bundleIdentifier": "legacy.owner"
+              },
+              "network": \(networkJSON),
+              "processID": 77,
+              "processName": "Helper",
+              "delta": {
+                "download": \(download),
+                "upload": \(upload)
+              },
+              "peakBytesPerSecond": \(download + upload)
+            }
+            """
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let samples = try [
+            sampleJSON("2024-07-17T00:00:00Z", 10, 2),
+            sampleJSON("2024-07-17T00:00:01Z", 25, 5)
+        ].map { try decoder.decode(TrafficSample.self, from: Data($0.utf8)) }
+
+        let ranking = TrafficAnalyticsEngine(repository: TrafficHistoryRepository(store: InMemoryTrafficStore()))
+            .rank(samples: samples)
+
+        XCTAssertEqual(ranking.map(\.total), [42])
+        XCTAssertEqual(ranking[0].processes.count, 1)
+        XCTAssertEqual(ranking[0].processes[0].processID, 77)
+        XCTAssertEqual(ranking[0].processes[0].download, 35)
+        XCTAssertEqual(ranking[0].processes[0].upload, 7)
+    }
+
+    func testProcessTrafficSummaryDecodesLegacyPayloadWithoutDiscriminator() throws {
+        let legacy = """
+        {
+          "processID": 77,
+          "processName": "Helper",
+          "download": 10,
+          "upload": 2,
+          "peakBytesPerSecond": 12
+        }
+        """
+
+        let decoded = try JSONDecoder().decode(ProcessTrafficSummary.self, from: Data(legacy.utf8))
+
+        XCTAssertNil(decoded.processDiscriminator)
+        XCTAssertEqual(decoded.processID, 77)
+        XCTAssertEqual(decoded.processName, "Helper")
     }
 
     func testAnalyticsEngineDeduplicatesTunnelAgainstPhysical() {
@@ -843,7 +1029,234 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(coordinator.snapshot().samplesWritten, 0)
     }
 
-    func testRetentionCompactionPromotesSecondsToMinutes() {
+    func testCoordinatorRetriesFailedSamplesWithOriginalTimestampsInNextAtomicBatch() {
+        let store = RecordingTrafficStore()
+        store.failNextWrite = true
+        let repository = TrafficHistoryRepository(store: store)
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 100))
+        let coordinator = TrafficAnalyticsCoordinator(repository: repository, clock: clock)
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        coordinator.start()
+        coordinator.updateNetwork(network)
+
+        let first = ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 42,
+            processStartToken: 1,
+            isDelta: true,
+            download: 10,
+            upload: 1
+        )
+        coordinator.ingest(counters: [first])
+        XCTAssertEqual(coordinator.snapshot().samplesWritten, 0)
+        XCTAssertNotNil(coordinator.snapshot().lastError)
+
+        clock.advance(by: 5)
+        let second = ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 42,
+            processStartToken: 1,
+            isDelta: true,
+            download: 20,
+            upload: 2
+        )
+        coordinator.ingest(counters: [second])
+
+        let samples = repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: Date(timeIntervalSince1970: 99),
+            end: Date(timeIntervalSince1970: 106)
+        ))
+        XCTAssertEqual(samples.map(\.timestamp), [
+            Date(timeIntervalSince1970: 100),
+            Date(timeIntervalSince1970: 105)
+        ])
+        XCTAssertEqual(samples.map(\.delta), [
+            TrafficDelta(download: 10, upload: 1),
+            TrafficDelta(download: 20, upload: 2)
+        ])
+        XCTAssertEqual(store.atomicWrites.count, 1)
+        XCTAssertEqual(store.atomicWrites[0].puts.count, 2)
+        XCTAssertEqual(coordinator.snapshot().samplesWritten, 2)
+        XCTAssertNil(coordinator.snapshot().lastError)
+    }
+
+    func testCoordinatorDisablesHistoryAfterBoundedPersistenceFailures() {
+        let store = RecordingTrafficStore()
+        store.failAllWrites = true
+        let repository = TrafficHistoryRepository(store: store)
+        let coordinator = TrafficAnalyticsCoordinator(
+            repository: repository,
+            persistencePolicy: TrafficPersistencePolicy(maxPendingSamples: 4, maxConsecutiveFailures: 2)
+        )
+        coordinator.start()
+
+        for value in 1...6 {
+            coordinator.ingest(counters: [ProcessTrafficCounter(
+                identity: self.identity,
+                processID: 42,
+                processStartToken: 1,
+                isDelta: true,
+                download: UInt64(value),
+                upload: 0
+            )])
+        }
+
+        let snapshot = coordinator.snapshot()
+        XCTAssertFalse(snapshot.isHistoryEnabled)
+        XCTAssertEqual(snapshot.pendingSamples, 0)
+        XCTAssertEqual(snapshot.samplesWritten, 0)
+        XCTAssertEqual(store.attemptedWrites.map { $0.puts.count }, [1, 1])
+        XCTAssertTrue(snapshot.lastError?.contains("disabled") == true)
+        XCTAssertTrue(snapshot.lastError?.contains("dropped 2") == true)
+    }
+
+    func testCoordinatorClearDiscardsFailedSamplesAndBaselinesBeforeCollectionContinues() throws {
+        let store = RecordingTrafficStore()
+        store.failNextWrite = true
+        let repository = TrafficHistoryRepository(store: store)
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 100))
+        let coordinator = TrafficAnalyticsCoordinator(repository: repository, clock: clock)
+        coordinator.start()
+
+        coordinator.ingest(counters: [ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 42,
+            processStartToken: 1,
+            download: 100,
+            upload: 10
+        )])
+        clock.advance(by: 5)
+        coordinator.ingest(counters: [ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 42,
+            processStartToken: 1,
+            download: 110,
+            upload: 11
+        )])
+        XCTAssertEqual(coordinator.snapshot().pendingSamples, 1)
+
+        try coordinator.clearAnalyticsData()
+        XCTAssertEqual(coordinator.snapshot().pendingSamples, 0)
+        XCTAssertEqual(coordinator.snapshot().samplesWritten, 0)
+
+        clock.advance(by: 5)
+        coordinator.ingest(counters: [ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 42,
+            processStartToken: 1,
+            download: 130,
+            upload: 13
+        )])
+        clock.advance(by: 5)
+        coordinator.ingest(counters: [ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 42,
+            processStartToken: 1,
+            download: 150,
+            upload: 15
+        )])
+
+        let samples = repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: Date(timeIntervalSince1970: 99),
+            end: Date(timeIntervalSince1970: 116)
+        ))
+        XCTAssertEqual(samples.map(\.timestamp), [Date(timeIntervalSince1970: 115)])
+        XCTAssertEqual(samples.map(\.delta), [TrafficDelta(download: 20, upload: 2)])
+    }
+
+    func testCoordinatorClearSerializesWithInFlightIngestion() throws {
+        let store = BlockingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let coordinator = TrafficAnalyticsCoordinator(repository: repository)
+        coordinator.start()
+
+        let ingestFinished = expectation(description: "ingest finished")
+        DispatchQueue.global().async {
+            coordinator.ingest(counters: [ProcessTrafficCounter(
+                identity: self.identity,
+                processID: 42,
+                processStartToken: 1,
+                isDelta: true,
+                download: 10,
+                upload: 1
+            )])
+            ingestFinished.fulfill()
+        }
+        XCTAssertTrue(store.waitUntilWriteStarts())
+
+        let clearFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            try? coordinator.clearAnalyticsData()
+            clearFinished.signal()
+        }
+        XCTAssertEqual(clearFinished.wait(timeout: .now() + 0.05), .timedOut)
+
+        store.finishBlockedWrite()
+        wait(for: [ingestFinished], timeout: 1)
+        XCTAssertEqual(clearFinished.wait(timeout: .now() + 1), .success)
+
+        XCTAssertTrue(repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: Date().addingTimeInterval(-60),
+            end: Date().addingTimeInterval(60)
+        )).isEmpty)
+    }
+
+    func testCoordinatorStopFlushesPendingSamplesAndReportsSuccess() {
+        let store = RecordingTrafficStore()
+        store.failNextWrite = true
+        let repository = TrafficHistoryRepository(store: store)
+        let coordinator = TrafficAnalyticsCoordinator(repository: repository)
+        coordinator.start()
+        coordinator.ingest(counters: [ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 42,
+            processStartToken: 1,
+            isDelta: true,
+            download: 10,
+            upload: 1
+        )])
+
+        XCTAssertTrue(coordinator.stop())
+
+        let snapshot = coordinator.snapshot()
+        XCTAssertFalse(snapshot.isCollecting)
+        XCTAssertEqual(snapshot.samplesWritten, 1)
+        XCTAssertEqual(snapshot.pendingSamples, 0)
+        XCTAssertNil(snapshot.lastError)
+    }
+
+    func testCoordinatorStopReportsFailedFinalFlushWithoutClaimingPersistence() {
+        let store = RecordingTrafficStore()
+        store.failAllWrites = true
+        let repository = TrafficHistoryRepository(store: store)
+        let coordinator = TrafficAnalyticsCoordinator(
+            repository: repository,
+            persistencePolicy: TrafficPersistencePolicy(maxPendingSamples: 4, maxConsecutiveFailures: 3)
+        )
+        coordinator.start()
+        coordinator.ingest(counters: [ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 42,
+            processStartToken: 1,
+            isDelta: true,
+            download: 10,
+            upload: 1
+        )])
+
+        XCTAssertFalse(coordinator.stop())
+
+        let snapshot = coordinator.snapshot()
+        XCTAssertFalse(snapshot.isCollecting)
+        XCTAssertEqual(snapshot.samplesWritten, 0)
+        XCTAssertEqual(snapshot.pendingSamples, 1)
+        XCTAssertNotNil(snapshot.lastError)
+        XCTAssertEqual(store.attemptedWrites.map { $0.puts.count }, [1, 1])
+    }
+
+    func testRetentionCompactionPromotesSecondsToMinutes() throws {
         let store = InMemoryTrafficStore()
         let repository = TrafficHistoryRepository(store: store)
         let wifi = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
@@ -854,7 +1267,7 @@ final class NetAnalyticsTests: XCTestCase {
             self.sample(at: old.addingTimeInterval(30), network: wifi, applicationID: "app.a", download: 5, upload: 2)
         ])
 
-        TrafficAggregation.compact(
+        try TrafficAggregation.compact(
             repository: repository,
             now: now,
             policy: TrafficRetentionPolicy(secondRetention: 24 * 60 * 60, minuteRetention: 30 * 24 * 60 * 60, hourRetention: 2 * 365 * 24 * 60 * 60)
@@ -872,10 +1285,1271 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(minutes.first?.delta.upload, 3)
     }
 
+    func testDailyAggregationUsesCalendarDayBoundary() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let timestamp = Date(timeIntervalSince1970: 1_710_069_300) // 2024-03-10 01:55 PST
+
+        let daily = TrafficAggregation.aggregate(
+            samples: [self.sample(at: timestamp, network: network, applicationID: "app", download: 1, upload: 2)],
+            level: .day,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(daily.first?.timestamp, calendar.startOfDay(for: timestamp))
+    }
+
+    func testAggregateConvergesAcrossTwoRestartedCompactionPassesWithExactCountsAndMultipleHelpers() throws {
+        let store = RecordingTrafficStore()
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_010)
+        let policy = TrafficRetentionPolicy(secondRetention: 60, minuteRetention: 60 * 60, hourRetention: 24 * 60 * 60)
+        let firstHelperA = self.sample(at: timestamp, network: network, applicationID: "app.owner", processID: 41, processName: "Helper A", processStartToken: 101, download: 10, upload: 1)
+        let firstHelperB = self.sample(at: timestamp.addingTimeInterval(1), network: network, applicationID: "app.owner", processID: 42, processName: "Helper B", processStartToken: 102, download: 20, upload: 2)
+        let firstRepository = TrafficHistoryRepository(store: store)
+        XCTAssertSuccess(firstRepository.ingest([firstHelperA, firstHelperB]))
+        let firstSourceKeys = store.keys(prefix: "net.analytics.v2|second|")
+
+        try TrafficAggregation.compact(
+            repository: firstRepository,
+            now: timestamp.addingTimeInterval(2 * 60),
+            policy: policy
+        )
+
+        XCTAssertTrue(firstSourceKeys.allSatisfy { store.get(key: $0) == nil })
+        let secondHelperA = self.sample(at: timestamp.addingTimeInterval(20), network: network, applicationID: "app.owner", processID: 41, processName: "Helper A", processStartToken: 101, download: 5, upload: 4)
+        let secondHelperC = self.sample(at: timestamp.addingTimeInterval(21), network: network, applicationID: "app.owner", processID: 43, processName: "Helper C", processStartToken: 103, download: 7, upload: 3)
+        let restarted = TrafficHistoryRepository(store: store)
+        XCTAssertSuccess(restarted.ingest([secondHelperA, secondHelperC]))
+        let secondSourceKeys = store.keys(prefix: "net.analytics.v2|second|")
+
+        try TrafficAggregation.compact(
+            repository: restarted,
+            now: timestamp.addingTimeInterval(3 * 60),
+            policy: policy
+        )
+
+        let finalRepository = TrafficHistoryRepository(store: store)
+        let minuteRecords = finalRepository.fetchRecords(TrafficHistoryQuery(
+            level: .minute,
+            start: timestamp.addingTimeInterval(-60),
+            end: timestamp.addingTimeInterval(60)
+        ))
+        XCTAssertEqual(minuteRecords.count, 1)
+        XCTAssertEqual(minuteRecords[0].sample.delta, TrafficDelta(download: 42, upload: 10))
+        XCTAssertEqual(minuteRecords[0].sample.peakBytesPerSecond, 22)
+        XCTAssertEqual(minuteRecords[0].sampleCount, 4)
+        XCTAssertEqual(minuteRecords[0].processSummaries, [
+            StoredProcessTrafficSummary(
+                processDiscriminator: firstHelperA.processDiscriminator,
+                processID: 41,
+                processName: "Helper A",
+                download: 15,
+                upload: 5,
+                peakBytesPerSecond: 11,
+                sampleCount: 2
+            ),
+            StoredProcessTrafficSummary(
+                processDiscriminator: firstHelperB.processDiscriminator,
+                processID: 42,
+                processName: "Helper B",
+                download: 20,
+                upload: 2,
+                peakBytesPerSecond: 22,
+                sampleCount: 1
+            ),
+            StoredProcessTrafficSummary(
+                processDiscriminator: secondHelperC.processDiscriminator,
+                processID: 43,
+                processName: "Helper C",
+                download: 7,
+                upload: 3,
+                peakBytesPerSecond: 10,
+                sampleCount: 1
+            )
+        ])
+        XCTAssertTrue(secondSourceKeys.allSatisfy { store.get(key: $0) == nil })
+        XCTAssertEqual(store.atomicWrites.last?.deletes.sorted(), secondSourceKeys.sorted())
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v2|second|").count, 0)
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v2|minute|").count, 1)
+
+        try TrafficAggregation.compact(
+            repository: finalRepository,
+            now: timestamp.addingTimeInterval(3 * 60),
+            policy: policy
+        )
+        XCTAssertEqual(finalRepository.fetchRecords(TrafficHistoryQuery(
+            level: .minute,
+            start: timestamp.addingTimeInterval(-60),
+            end: timestamp.addingTimeInterval(60)
+        )), minuteRecords)
+    }
+
+    func testAnalyticsSnapshotRestoresCompactedHelperBreakdownAfterRestartWithoutDoubleCountingTotals() throws {
+        let store = RecordingTrafficStore()
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = Date(timeIntervalSince1970: 1_800_010_000)
+        let timestamp = now.addingTimeInterval(-2 * 60 * 60)
+        let helperA = self.sample(
+            at: timestamp,
+            network: network,
+            applicationID: "app.owner",
+            processID: 41,
+            processName: "Helper A",
+            processStartToken: 101,
+            download: 10,
+            upload: 1
+        )
+        let helperB = self.sample(
+            at: timestamp.addingTimeInterval(1),
+            network: network,
+            applicationID: "app.owner",
+            processID: 42,
+            processName: "Helper B",
+            processStartToken: 102,
+            download: 20,
+            upload: 2
+        )
+        let helperASecondSample = self.sample(
+            at: timestamp.addingTimeInterval(2),
+            network: network,
+            applicationID: "app.owner",
+            processID: 41,
+            processName: "Helper A",
+            processStartToken: 101,
+            download: 5,
+            upload: 4
+        )
+        let repository = TrafficHistoryRepository(store: store)
+        XCTAssertSuccess(repository.ingest([helperA, helperB, helperASecondSample]))
+
+        try TrafficAggregation.compact(
+            repository: repository,
+            now: now,
+            policy: TrafficRetentionPolicy(
+                secondRetention: 60,
+                minuteRetention: 30 * 24 * 60 * 60,
+                hourRetention: 2 * 365 * 24 * 60 * 60
+            )
+        )
+
+        let restarted = TrafficHistoryRepository(store: store)
+        let raw = restarted.fetch(TrafficHistoryQuery(
+            level: .minute,
+            start: timestamp.addingTimeInterval(-60),
+            end: timestamp.addingTimeInterval(60)
+        ))
+        XCTAssertEqual(raw.count, 1)
+        XCTAssertEqual(raw[0].delta, TrafficDelta(download: 35, upload: 7))
+
+        let engine = TrafficAnalyticsEngine(repository: restarted)
+        let snapshot = engine.snapshot(for: TrafficAnalyticsQuery(range: .sevenDays, now: now))
+        XCTAssertEqual(snapshot.download, 35)
+        XCTAssertEqual(snapshot.upload, 7)
+        XCTAssertEqual(snapshot.total, 42)
+        XCTAssertEqual(snapshot.buckets.reduce(UInt64(0)) { $0 + $1.download + $1.upload }, 42)
+        XCTAssertEqual(snapshot.ranking.count, 1)
+        XCTAssertEqual(snapshot.ranking[0].download, 35)
+        XCTAssertEqual(snapshot.ranking[0].upload, 7)
+        XCTAssertEqual(snapshot.ranking[0].processes, [
+            ProcessTrafficSummary(
+                processDiscriminator: helperA.processDiscriminator,
+                processID: 41,
+                processName: "Helper A",
+                download: 15,
+                upload: 5,
+                peakBytesPerSecond: 11
+            ),
+            ProcessTrafficSummary(
+                processDiscriminator: helperB.processDiscriminator,
+                processID: 42,
+                processName: "Helper B",
+                download: 20,
+                upload: 2,
+                peakBytesPerSecond: 22
+            )
+        ])
+
+        let searched = engine.snapshot(for: TrafficAnalyticsQuery(
+            range: .sevenDays,
+            applicationSearch: "Helper B",
+            now: now
+        ))
+        XCTAssertEqual(searched.ranking.map(\.total), [42])
+    }
+
+    func testAnalyticsSnapshotFallsBackToRepresentativeProcessForLegacyAggregateWithoutSummaries() throws {
+        let store = RecordingTrafficStore()
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = Date(timeIntervalSince1970: 1_800_010_000)
+        let timestamp = now.addingTimeInterval(-2 * 60 * 60)
+        let legacy = self.sample(
+            at: timestamp,
+            network: network,
+            applicationID: "legacy.owner",
+            processID: 77,
+            processName: "Legacy Representative",
+            download: 30,
+            upload: 12
+        )
+        let key = "net.analytics.v1|minute|\(String(format: "%020lld", Int64(timestamp.timeIntervalSince1970)))|wifi|legacy.owner"
+        try store.writeAtomically(puts: [(key, try self.encode(legacy))], deletes: [])
+
+        let snapshot = TrafficAnalyticsEngine(repository: TrafficHistoryRepository(store: store)).snapshot(
+            for: TrafficAnalyticsQuery(range: .sevenDays, now: now)
+        )
+
+        XCTAssertEqual(snapshot.total, 42)
+        XCTAssertEqual(snapshot.ranking.first?.total, 42)
+        XCTAssertEqual(snapshot.ranking.first?.processes, [
+            ProcessTrafficSummary(
+                processDiscriminator: legacy.processDiscriminator,
+                processID: 77,
+                processName: "Legacy Representative",
+                download: 30,
+                upload: 12,
+                peakBytesPerSecond: 42
+            )
+        ])
+    }
+
+    func testAnalyticsSnapshotKeepsCompactedPIDReuseLifetimesDistinctAfterRestart() throws {
+        let store = RecordingTrafficStore()
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = Date(timeIntervalSince1970: 1_800_020_000)
+        let timestamp = now.addingTimeInterval(-2 * 60 * 60)
+        let firstLifetime = self.sample(
+            at: timestamp,
+            network: network,
+            applicationID: "app.owner",
+            processID: 77,
+            processName: "Helper",
+            processStartToken: 101,
+            download: 10,
+            upload: 2
+        )
+        let secondLifetime = self.sample(
+            at: timestamp.addingTimeInterval(1),
+            network: network,
+            applicationID: "app.owner",
+            processID: 77,
+            processName: "Helper",
+            processStartToken: 202,
+            download: 25,
+            upload: 5
+        )
+        let repository = TrafficHistoryRepository(store: store)
+        XCTAssertSuccess(repository.ingest([firstLifetime, secondLifetime]))
+
+        try TrafficAggregation.compact(
+            repository: repository,
+            now: now,
+            policy: TrafficRetentionPolicy(
+                secondRetention: 60,
+                minuteRetention: 30 * 24 * 60 * 60,
+                hourRetention: 2 * 365 * 24 * 60 * 60
+            )
+        )
+
+        let restarted = TrafficHistoryRepository(store: store)
+        let compacted = restarted.fetchRecords(TrafficHistoryQuery(
+            level: .minute,
+            start: timestamp.addingTimeInterval(-60),
+            end: timestamp.addingTimeInterval(60)
+        ))
+        XCTAssertEqual(compacted.count, 1)
+        XCTAssertEqual(compacted[0].sample.delta.total, 42)
+        XCTAssertEqual(
+            Set(compacted[0].processSummaries?.map(\.processDiscriminator) ?? []),
+            Set([firstLifetime.processDiscriminator, secondLifetime.processDiscriminator])
+        )
+
+        let snapshot = TrafficAnalyticsEngine(repository: restarted).snapshot(
+            for: TrafficAnalyticsQuery(range: .sevenDays, now: now)
+        )
+        XCTAssertEqual(snapshot.total, 42)
+        XCTAssertEqual(snapshot.ranking.map(\.total), [42])
+        XCTAssertEqual(snapshot.ranking[0].processes.count, 2)
+        XCTAssertEqual(
+            Set(snapshot.ranking[0].processes.compactMap(\.processDiscriminator)),
+            Set([firstLifetime.processDiscriminator, secondLifetime.processDiscriminator])
+        )
+        XCTAssertEqual(snapshot.ranking[0].processes.reduce(UInt64(0)) { $0 + $1.download + $1.upload }, 42)
+    }
+
+    func testAggregateMergePropagatesUnknownCountsAcrossRestart() throws {
+        let store = RecordingTrafficStore()
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_010)
+        let bucketStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let unknown = self.sample(at: bucketStart, network: network, applicationID: "app.owner", processID: 41, processName: "Helper A", processStartToken: 101, download: 10, upload: 1)
+        let initialRepository = TrafficHistoryRepository(store: store)
+        try initialRepository.replaceAtomically(records: [
+            StoredTrafficRecord(schema: .v2, level: .minute, sample: unknown, sampleCount: nil)
+        ], deleting: TrafficHistoryQuery(level: .second, start: timestamp, end: timestamp))
+
+        let exact = self.sample(at: timestamp.addingTimeInterval(20), network: network, applicationID: "app.owner", processID: 41, processName: "Helper A", processStartToken: 101, download: 5, upload: 4)
+        let restarted = TrafficHistoryRepository(store: store)
+        XCTAssertSuccess(restarted.ingest([exact]))
+        try TrafficAggregation.compact(
+            repository: restarted,
+            now: timestamp.addingTimeInterval(3 * 60),
+            policy: TrafficRetentionPolicy(secondRetention: 60, minuteRetention: 60 * 60, hourRetention: 24 * 60 * 60)
+        )
+
+        let record = TrafficHistoryRepository(store: store).fetchRecords(TrafficHistoryQuery(
+            level: .minute,
+            start: timestamp.addingTimeInterval(-60),
+            end: timestamp.addingTimeInterval(60)
+        )).first
+        XCTAssertEqual(record?.sample.delta, TrafficDelta(download: 15, upload: 5))
+        XCTAssertNil(record?.sampleCount)
+        XCTAssertEqual(record?.processSummaries?.first?.download, 15)
+        XCTAssertEqual(record?.processSummaries?.first?.upload, 5)
+        XCTAssertNil(record?.processSummaries?.first?.sampleCount)
+    }
+
+    func testHistoryV2ReadsLegacyV1AndWritesOnlyV2() throws {
+        let store = RecordingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let network = NetworkIdentity(id: "wifi|home%\n", displayName: "Home", interfaceName: "en0", kind: .wifi)
+        let timestamp = Date(timeIntervalSince1970: 1_721_234_567)
+        let legacy = self.sample(at: timestamp, network: network, applicationID: "legacy.app", download: 4, upload: 1)
+        let legacyKey = "net.analytics.v1|second|00000000001721234567|wifi|home%\n|legacy.app"
+        try store.writeAtomically(puts: [(legacyKey, try self.encode(legacy))], deletes: [])
+
+        XCTAssertEqual(repository.fetch(TrafficHistoryQuery(level: .second, start: timestamp, end: timestamp)), [legacy])
+
+        let fresh = self.sample(
+            at: timestamp.addingTimeInterval(1),
+            network: network,
+            applicationID: "fresh|app%\n",
+            processID: 7,
+            processStartToken: 88,
+            download: 9,
+            upload: 2
+        )
+        XCTAssertSuccess(repository.ingest([fresh]))
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v1").count, 1)
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v2|second|").count, 1)
+        XCTAssertTrue(store.keys(prefix: "net.analytics.v2|second|")[0].contains("wifi%7Chome%25%0A"))
+        XCTAssertTrue(store.keys(prefix: "net.analytics.v2|second|")[0].contains("fresh%7Capp%25%0A"))
+    }
+
+    func testHistoryV2RawKeysRoundTripMultipleHelpersAcrossRestart() {
+        let store = RecordingTrafficStore()
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = self.sample(at: timestamp, network: network, applicationID: "app.owner", processID: 41, processStartToken: 101, download: 10, upload: 1)
+        let second = self.sample(at: timestamp, network: network, applicationID: "app.owner", processID: 42, processStartToken: 102, download: 20, upload: 2)
+
+        XCTAssertSuccess(TrafficHistoryRepository(store: store).ingest([first, second]))
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v2|second|").count, 2)
+
+        let restarted = TrafficHistoryRepository(store: store)
+        let fetched = restarted.fetch(TrafficHistoryQuery(level: .second, start: timestamp, end: timestamp))
+        XCTAssertEqual(Set(fetched.map(\.processDiscriminator)), Set([first.processDiscriminator, second.processDiscriminator]))
+        XCTAssertEqual(
+            TrafficHistoryRepository.makeKey(level: .minute, timestamp: timestamp, networkID: network.id, applicationID: first.application.id),
+            TrafficHistoryRepository.makeKey(level: .minute, timestamp: timestamp, networkID: network.id, applicationID: second.application.id)
+        )
+    }
+
+    func testCollectorBuilderCoordinatorRepositoryKeepsPIDReuseLifetimesAsDistinctV2Records() throws {
+        let store = RecordingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let provider = MutableProcessMetadataProvider(entry: ProcessMetadata(
+            processID: 77,
+            processName: "Helper",
+            executablePath: "/Applications/App.app/Helper",
+            processStartToken: 111
+        ))
+        let runner = RecordingNettopRunner(results: [
+            .success(self.pidReuseFixture(download: 10, upload: 1)),
+            .success(self.pidReuseFixture(download: 20, upload: 3)),
+            .success(self.pidReuseFixture(download: 5, upload: 1)),
+            .success(self.pidReuseFixture(download: 12, upload: 4))
+        ])
+        let collector = NettopCollector(runner: runner)
+        let builder = ProcessTrafficCounterBuilder(provider: provider)
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+        let coordinator = TrafficAnalyticsCoordinator(
+            repository: repository,
+            resolver: ApplicationIdentityResolver(provider: provider),
+            clock: clock
+        )
+        coordinator.start()
+
+        coordinator.ingest(counters: builder.counters(rows: try collector.snapshot().rows))
+        clock.advance(by: 1)
+        coordinator.ingest(counters: builder.counters(rows: try collector.snapshot().rows))
+
+        provider.entry = ProcessMetadata(
+            processID: 77,
+            processName: "Helper",
+            executablePath: "/Applications/App.app/Helper",
+            processStartToken: 222
+        )
+        clock.advance(by: 1)
+        coordinator.ingest(counters: builder.counters(rows: try collector.snapshot().rows))
+        clock.advance(by: 1)
+        coordinator.ingest(counters: builder.counters(rows: try collector.snapshot().rows))
+
+        let fetched = repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: Date(timeIntervalSince1970: 1_800_000_000),
+            end: Date(timeIntervalSince1970: 1_800_000_010)
+        ))
+        XCTAssertEqual(fetched.map(\.processStartToken), [111, 222])
+        XCTAssertEqual(fetched.map(\.delta), [
+            TrafficDelta(download: 10, upload: 2),
+            TrafficDelta(download: 7, upload: 3)
+        ])
+        XCTAssertEqual(Set(fetched.map(\.processDiscriminator)).count, 2)
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v2|second|").count, 2)
+    }
+
+    func testNettopCollectorPassesExactProductionCommandIntoProductionParser() throws {
+        let runner = RecordingNettopRunner(results: [.success(self.connectionFixture)])
+        let collector = NettopCollector(runner: runner, timeout: 0.75)
+
+        let result = try collector.snapshot()
+
+        XCTAssertEqual(runner.commands, [.connectionSnapshot])
+        XCTAssertEqual(runner.timeouts, [0.75])
+        XCTAssertEqual(NettopCommand.connectionSnapshot.executableURL.path, "/usr/bin/nettop")
+        XCTAssertEqual(
+            NettopCommand.connectionSnapshot.arguments,
+            ["-L", "1", "-n", "-x", "-J", "interface,bytes_in,bytes_out"]
+        )
+        XCTAssertEqual(result.malformedRowCount, 0)
+        XCTAssertEqual(result.rows.filter { !$0.isProcessSummary }.map(\.interfaceName), ["en0", "utun4", "en0", nil])
+        XCTAssertTrue(result.rows.filter { !$0.isProcessSummary }.allSatisfy { $0.processID == 55 && $0.processName == "Client Helper" })
+        XCTAssertEqual(result.rows.filter { !$0.isProcessSummary }.first?.connectionID, "tcp4 10.0.0.2:1<->1.1.1.1:443")
+    }
+
+    func testConnectionCountersAggregateOncePerProcessLifetimeAndInterface() {
+        let provider = FakeProcessMetadataProvider(entries: [
+            55: ProcessMetadata(processID: 55, processName: "Client Helper", executablePath: "/Client", processStartToken: 900)
+        ])
+        let builder = ProcessTrafficCounterBuilder(provider: provider, fallbackInterfaceName: "en9")
+        _ = builder.counters(rows: NettopSnapshotParser.parse(csv: self.connectionFixture).rows)
+
+        let next = self.connectionFixture
+            .replacingOccurrences(of: "100,20", with: "140,30")
+            .replacingOccurrences(of: "50,10", with: "70,15")
+            .replacingOccurrences(of: "25,5", with: "35,8")
+            .replacingOccurrences(of: "5,1", with: "8,2")
+        let counters = builder.counters(rows: NettopSnapshotParser.parse(csv: next).rows)
+
+        XCTAssertEqual(counters.map(\.interfaceName), ["en0", "en9", "utun4"])
+        XCTAssertEqual(counters.first { $0.interfaceName == "en0" }?.download, 50)
+        XCTAssertEqual(counters.first { $0.interfaceName == "en0" }?.upload, 13)
+        XCTAssertEqual(counters.first { $0.interfaceName == "utun4" }?.download, 20)
+        XCTAssertEqual(counters.first { $0.interfaceName == "utun4" }?.upload, 5)
+        XCTAssertEqual(counters.first { $0.interfaceName == "en9" }?.download, 3)
+        XCTAssertEqual(counters.first { $0.interfaceName == "en9" }?.upload, 1)
+    }
+
+    func testConnectionSnapshotDeduplicatesRepeatedRowsWithoutAddingProcessSummaryBytes() {
+        let provider = FakeProcessMetadataProvider(entries: [
+            55: ProcessMetadata(processID: 55, processName: "Client Helper", executablePath: "/Client", processStartToken: 900)
+        ])
+        let builder = ProcessTrafficCounterBuilder(provider: provider)
+        _ = builder.counters(rows: NettopSnapshotParser.parse(csv: self.connectionFixture).rows)
+        let next = self.connectionFixture.replacingOccurrences(of: "100,20", with: "110,22")
+        let counters = builder.counters(rows: NettopSnapshotParser.parse(csv: next).rows)
+        let en0 = counters.first { $0.interfaceName == "en0" }
+        XCTAssertEqual(en0?.download, 10)
+        XCTAssertEqual(en0?.upload, 2)
+    }
+
+    func testConnectionSnapshotPrefersAttributedDuplicateOverFallbackInterface() {
+        let provider = FakeProcessMetadataProvider(entries: [
+            55: ProcessMetadata(processID: 55, processName: "Client Helper", executablePath: "/Client", processStartToken: 900)
+        ])
+        let builder = ProcessTrafficCounterBuilder(provider: provider, fallbackInterfaceName: "en9")
+        let first = """
+        ,interface,bytes_in,bytes_out,
+        Client Helper.55,,1000,200,
+        tcp4 10.0.0.2:1<->1.1.1.1:443,,100,20,
+        tcp4 10.0.0.2:1<->1.1.1.1:443,en0,100,20,
+        """
+        let second = first.replacingOccurrences(of: "100,20", with: "125,25")
+
+        _ = builder.counters(rows: NettopSnapshotParser.parse(csv: first).rows)
+        let counters = builder.counters(rows: NettopSnapshotParser.parse(csv: second).rows)
+
+        XCTAssertEqual(counters.count, 1)
+        XCTAssertEqual(counters[0].interfaceName, "en0")
+        XCTAssertEqual(counters[0].download, 25)
+        XCTAssertEqual(counters[0].upload, 5)
+    }
+
+    func testConnectionSnapshotCollapsesUnattributedDuplicateWhenConcreteInterfacesExist() {
+        let provider = FakeProcessMetadataProvider(entries: [
+            55: ProcessMetadata(processID: 55, processName: "Client Helper", executablePath: "/Client", processStartToken: 900)
+        ])
+        let builder = ProcessTrafficCounterBuilder(provider: provider, fallbackInterfaceName: "en9")
+        let first = """
+        ,interface,bytes_in,bytes_out,
+        Client Helper.55,,1000,200,
+        tcp4 a<->b,,500,100,
+        tcp4 a<->b,en0,100,20,
+        tcp4 a<->b,en0,100,20,
+        tcp4 a<->b,utun3,50,10,
+        """
+        let second = """
+        ,interface,bytes_in,bytes_out,
+        Client Helper.55,,1100,220,
+        tcp4 a<->b,,700,140,
+        tcp4 a<->b,en0,125,25,
+        tcp4 a<->b,en0,125,25,
+        tcp4 a<->b,utun3,60,12,
+        """
+
+        _ = builder.counters(rows: NettopSnapshotParser.parse(csv: first).rows)
+        let counters = builder.counters(rows: NettopSnapshotParser.parse(csv: second).rows)
+
+        XCTAssertEqual(counters.map(\.interfaceName), ["en0", "utun3"])
+        XCTAssertEqual(counters.first { $0.interfaceName == "en0" }?.download, 25)
+        XCTAssertEqual(counters.first { $0.interfaceName == "en0" }?.upload, 5)
+        XCTAssertEqual(counters.first { $0.interfaceName == "utun3" }?.download, 10)
+        XCTAssertEqual(counters.first { $0.interfaceName == "utun3" }?.upload, 2)
+        XCTAssertNil(counters.first { $0.interfaceName == "en9" })
+    }
+
+    func testConnectionSnapshotPreservesSameBaseConnectionOnPhysicalAndTunnelInterfaces() {
+        let provider = FakeProcessMetadataProvider(entries: [
+            55: ProcessMetadata(processID: 55, processName: "Client Helper", executablePath: "/Client", processStartToken: 900)
+        ])
+        let builder = ProcessTrafficCounterBuilder(provider: provider)
+        let first = """
+        ,interface,bytes_in,bytes_out,
+        Client Helper.55,,1000,200,
+        tcp4 a<->b,en0,100,20,
+        tcp4 a<->b,utun3,50,10,
+        """
+        let second = """
+        ,interface,bytes_in,bytes_out,
+        Client Helper.55,,1100,220,
+        tcp4 a<->b,en0,130,26,
+        tcp4 a<->b,utun3,70,15,
+        """
+
+        _ = builder.counters(rows: NettopSnapshotParser.parse(csv: first).rows)
+        let counters = builder.counters(rows: NettopSnapshotParser.parse(csv: second).rows)
+
+        XCTAssertEqual(counters.map(\.interfaceName), ["en0", "utun3"])
+        XCTAssertEqual(counters.first { $0.interfaceName == "en0" }?.download, 30)
+        XCTAssertEqual(counters.first { $0.interfaceName == "en0" }?.upload, 6)
+        XCTAssertEqual(counters.first { $0.interfaceName == "utun3" }?.download, 20)
+        XCTAssertEqual(counters.first { $0.interfaceName == "utun3" }?.upload, 5)
+    }
+
+    func testConnectionInterfaceMigrationResetsBaselineWithoutSpuriousDelta() {
+        let provider = FakeProcessMetadataProvider(entries: [
+            55: ProcessMetadata(processID: 55, processName: "Client Helper", executablePath: "/Client", processStartToken: 900)
+        ])
+        let builder = ProcessTrafficCounterBuilder(provider: provider)
+        let physical = """
+        ,interface,bytes_in,bytes_out,
+        Client Helper.55,,1000,200,
+        tcp4 a<->b,en0,100,20,
+        """
+        let tunnel = """
+        ,interface,bytes_in,bytes_out,
+        Client Helper.55,,1100,220,
+        tcp4 a<->b,utun3,130,26,
+        """
+        let tunnelNext = tunnel
+            .replacingOccurrences(of: "130,26", with: "145,30")
+
+        _ = builder.counters(rows: NettopSnapshotParser.parse(csv: physical).rows)
+        let migrated = builder.counters(rows: NettopSnapshotParser.parse(csv: tunnel).rows)
+        let next = builder.counters(rows: NettopSnapshotParser.parse(csv: tunnelNext).rows)
+
+        XCTAssertEqual(migrated.count, 1)
+        XCTAssertEqual(migrated[0].interfaceName, "utun3")
+        XCTAssertEqual(migrated[0].download, 0)
+        XCTAssertEqual(migrated[0].upload, 0)
+        XCTAssertEqual(next.count, 1)
+        XCTAssertEqual(next[0].interfaceName, "utun3")
+        XCTAssertEqual(next[0].download, 15)
+        XCTAssertEqual(next[0].upload, 4)
+    }
+
+    func testConnectionCounterDirectionResetsAreIndependent() {
+        let provider = FakeProcessMetadataProvider(entries: [
+            55: ProcessMetadata(processID: 55, processName: "Client", executablePath: "/Client", processStartToken: 900)
+        ])
+        let builder = ProcessTrafficCounterBuilder(provider: provider)
+        let initial = """
+        ,interface,bytes_in,bytes_out,
+        Client.55,,1000,200,
+        tcp4 a<->b,en0,100,20,
+        """
+        let downloadReset = """
+        ,interface,bytes_in,bytes_out,
+        Client.55,,1100,220,
+        tcp4 a<->b,en0,10,25,
+        """
+        let uploadReset = """
+        ,interface,bytes_in,bytes_out,
+        Client.55,,1200,240,
+        tcp4 a<->b,en0,30,3,
+        """
+
+        _ = builder.counters(rows: NettopSnapshotParser.parse(csv: initial).rows)
+        let first = builder.counters(rows: NettopSnapshotParser.parse(csv: downloadReset).rows)
+        let second = builder.counters(rows: NettopSnapshotParser.parse(csv: uploadReset).rows)
+
+        XCTAssertEqual(first.first?.download, 0)
+        XCTAssertEqual(first.first?.upload, 5)
+        XCTAssertEqual(second.first?.download, 20)
+        XCTAssertEqual(second.first?.upload, 0)
+    }
+
+    func testProcessNettopRunnerTimeoutCleanupEscalatesAndSynchronizesReadersWithinBounds() {
+        let execution = RecordingNettopExecution(
+            waits: [false, false, false, true],
+            readerWaits: [true]
+        )
+        let runner = ProcessNettopRunner(executionFactory: { execution })
+
+        XCTAssertThrowsError(try runner.run(command: .connectionSnapshot, timeout: 0.25)) { error in
+            XCTAssertEqual(error as? NettopCollectionError, .timedOut)
+        }
+        XCTAssertEqual(execution.events, [
+            .start,
+            .waitForExit(0.25),
+            .terminate,
+            .waitForExit(0.2),
+            .interrupt,
+            .waitForExit(0.2),
+            .kill,
+            .waitForExit(0.2),
+            .closeReaders,
+            .waitForReaders(0.2)
+        ])
+        XCTAssertFalse(execution.usedUnboundedWait)
+    }
+
+    func testProcessReaderRetriesLaunchTimeoutEmptyMalformedThenRecoversWithCappedBackoff() {
+        let runner = RecordingNettopRunner(results: [
+            .failure(.launchFailed("launch")),
+            .failure(.timedOut),
+            .failure(.emptyOutput),
+            .success(",interface,bytes_in,bytes_out,\nbroken.1,en0,nope,2,\n"),
+            .success(self.pidReuseFixture(download: 10, upload: 1))
+        ])
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 10))
+        let scheduler = ManualProcessReadScheduler(clock: clock)
+        let provider = FakeProcessMetadataProvider(entries: [
+            77: ProcessMetadata(processID: 77, processName: "Helper", executablePath: "/Helper", processStartToken: 1)
+        ])
+        let reader = ProcessReader(
+            .network,
+            collector: NettopCollector(runner: runner, timeout: 0.25),
+            counterBuilder: ProcessTrafficCounterBuilder(provider: provider),
+            scheduler: scheduler
+        )
+        var diagnostics: [String] = []
+        var ingested: [[ProcessTrafficCounter]] = []
+        reader.analyticsFailure = { diagnostics.append($0) }
+        reader.analyticsIngest = { ingested.append($0) }
+
+        reader.read()
+        XCTAssertEqual(scheduler.delays, [1])
+        scheduler.runNext()
+        XCTAssertEqual(scheduler.delays, [1, 2])
+        scheduler.runNext()
+        XCTAssertEqual(scheduler.delays, [1, 2, 4])
+        scheduler.runNext()
+        XCTAssertEqual(scheduler.delays, [1, 2, 4, 8])
+        scheduler.runNext()
+
+        XCTAssertEqual(runner.timeouts, [0.25, 0.25, 0.25, 0.25, 0.25])
+        XCTAssertEqual(diagnostics.count, 4)
+        XCTAssertEqual(ingested.count, 1)
+        XCTAssertTrue(scheduler.delays.allSatisfy { $0 <= 30 })
+        XCTAssertFalse(scheduler.hasPendingWork)
+    }
+
+    func testProcessReaderFailureBackoffCapsAtThirtySeconds() {
+        let runner = RecordingNettopRunner(results: Array(repeating: .failure(.timedOut), count: 8))
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 10))
+        let scheduler = ManualProcessReadScheduler(clock: clock)
+        let reader = ProcessReader(
+            .network,
+            collector: NettopCollector(runner: runner),
+            counterBuilder: ProcessTrafficCounterBuilder(provider: FakeProcessMetadataProvider(entries: [:])),
+            scheduler: scheduler
+        )
+
+        reader.read()
+        for _ in 0..<7 { scheduler.runNext() }
+
+        XCTAssertEqual(scheduler.delays, [1, 2, 4, 8, 16, 30, 30, 30])
+    }
+
+    func testProcessReaderStopCancelsScheduledRetryWithoutCollectorOrCallbacks() {
+        let runner = RecordingNettopRunner(results: [
+            .failure(.timedOut),
+            .success(self.pidReuseFixture(download: 10, upload: 1))
+        ])
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 10))
+        let scheduler = ManualProcessReadScheduler(clock: clock)
+        let reader = ProcessReader(
+            .network,
+            collector: NettopCollector(runner: runner),
+            counterBuilder: ProcessTrafficCounterBuilder(provider: FakeProcessMetadataProvider(entries: [:])),
+            scheduler: scheduler
+        )
+        var failures = 0
+        var callbacks = 0
+        var ingests = 0
+        var stops = 0
+        reader.analyticsFailure = { _ in failures += 1 }
+        reader.analyticsIngest = { _ in ingests += 1 }
+        reader.analyticsStop = { stops += 1 }
+        reader.callbackHandler = { _ in callbacks += 1 }
+
+        reader.read()
+        XCTAssertEqual(runner.timeouts.count, 1)
+        XCTAssertEqual(failures, 1)
+        XCTAssertTrue(scheduler.hasPendingWork)
+
+        reader.stop()
+        scheduler.runNext()
+
+        XCTAssertEqual(runner.timeouts.count, 1)
+        XCTAssertEqual(failures, 1)
+        XCTAssertEqual(ingests, 0)
+        XCTAssertEqual(callbacks, 0)
+        XCTAssertEqual(stops, 1)
+        XCTAssertFalse(scheduler.hasPendingWork)
+        XCTAssertEqual(scheduler.delays, [1])
+    }
+
+    func testProcessReaderClearResetsConnectionBaseline() {
+        let runner = RecordingNettopRunner(results: [
+            .success(self.pidReuseFixture(download: 100, upload: 10)),
+            .success(self.pidReuseFixture(download: 140, upload: 15)),
+            .success(self.pidReuseFixture(download: 200, upload: 20)),
+            .success(self.pidReuseFixture(download: 225, upload: 23))
+        ])
+        let provider = FakeProcessMetadataProvider(entries: [
+            77: ProcessMetadata(processID: 77, processName: "Helper", executablePath: "/Helper", processStartToken: 1)
+        ])
+        let reader = ProcessReader(
+            .network,
+            collector: NettopCollector(runner: runner),
+            counterBuilder: ProcessTrafficCounterBuilder(provider: provider)
+        )
+        var ingested: [[ProcessTrafficCounter]] = []
+        reader.analyticsIngest = { ingested.append($0) }
+
+        reader.read()
+        reader.read()
+        reader.resetTrafficBaselines()
+        reader.read()
+        reader.read()
+
+        XCTAssertEqual(ingested.count, 4)
+        XCTAssertEqual(ingested[1].first?.download, 40)
+        XCTAssertEqual(ingested[1].first?.upload, 5)
+        XCTAssertEqual(ingested[2].first?.download, 0)
+        XCTAssertEqual(ingested[2].first?.upload, 0)
+        XCTAssertEqual(ingested[3].first?.download, 25)
+        XCTAssertEqual(ingested[3].first?.upload, 3)
+    }
+
+    func testProcessReaderStopCancelsInFlightCollectionWithoutCallbacksOrRetry() {
+        let runner = BlockingNettopRunner(
+            blockedResult: .failure(.timedOut),
+            remainingResults: []
+        )
+        let scheduler = ManualProcessReadScheduler(clock: MutableTrafficClock(now: Date(timeIntervalSince1970: 10)))
+        let reader = ProcessReader(
+            .network,
+            collector: NettopCollector(runner: runner),
+            counterBuilder: ProcessTrafficCounterBuilder(provider: FakeProcessMetadataProvider(entries: [:])),
+            scheduler: scheduler
+        )
+        var failures = 0
+        var callbacks = 0
+        var ingests = 0
+        reader.analyticsFailure = { _ in failures += 1 }
+        reader.analyticsIngest = { _ in ingests += 1 }
+        reader.callbackHandler = { _ in callbacks += 1 }
+
+        let readFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            reader.read()
+            readFinished.signal()
+        }
+        XCTAssertTrue(runner.waitUntilBlockedRunStarts())
+
+        reader.stop()
+
+        XCTAssertEqual(runner.cancelCount, 1)
+        XCTAssertTrue(runner.waitUntilBlockedRunFinishes())
+        XCTAssertEqual(readFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(failures, 0)
+        XCTAssertEqual(ingests, 0)
+        XCTAssertEqual(callbacks, 0)
+        XCTAssertFalse(scheduler.hasPendingWork)
+    }
+
+    func testProcessReaderRejectsStaleCompletionAndResetsConnectionBaselineAfterRestart() {
+        let old = self.pidReuseFixture(download: 100, upload: 10)
+        let firstAfterRestart = self.pidReuseFixture(download: 200, upload: 20)
+        let secondAfterRestart = self.pidReuseFixture(download: 230, upload: 24)
+        let runner = BlockingNettopRunner(
+            blockedResult: .success(old),
+            remainingResults: [.success(firstAfterRestart), .success(secondAfterRestart)],
+            finishBlockedRunOnCancel: false
+        )
+        let scheduler = ManualProcessReadScheduler(clock: MutableTrafficClock(now: Date(timeIntervalSince1970: 10)))
+        let provider = FakeProcessMetadataProvider(entries: [
+            77: ProcessMetadata(processID: 77, processName: "Helper", executablePath: "/Helper", processStartToken: 1)
+        ])
+        let reader = ProcessReader(
+            .network,
+            collector: NettopCollector(runner: runner),
+            counterBuilder: ProcessTrafficCounterBuilder(provider: provider),
+            scheduler: scheduler
+        )
+        var failures = 0
+        var callbacks = 0
+        var ingested: [[ProcessTrafficCounter]] = []
+        reader.analyticsFailure = { _ in failures += 1 }
+        reader.analyticsIngest = { ingested.append($0) }
+        reader.callbackHandler = { _ in callbacks += 1 }
+
+        let oldReadFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            reader.read()
+            oldReadFinished.signal()
+        }
+        XCTAssertTrue(runner.waitUntilBlockedRunStarts())
+
+        reader.stop()
+        reader.start()
+        runner.finishBlockedRun()
+        XCTAssertTrue(runner.waitUntilBlockedRunFinishes())
+        XCTAssertEqual(oldReadFinished.wait(timeout: .now() + 1), .success)
+
+        reader.read()
+        reader.read()
+
+        XCTAssertEqual(runner.cancelCount, 1)
+        XCTAssertEqual(runner.runCount, 3)
+        XCTAssertEqual(failures, 0)
+        XCTAssertEqual(callbacks, 2)
+        XCTAssertEqual(ingested.count, 2)
+        XCTAssertEqual(ingested[0].first?.download, 0)
+        XCTAssertEqual(ingested[0].first?.upload, 0)
+        XCTAssertEqual(ingested[1].first?.download, 30)
+        XCTAssertEqual(ingested[1].first?.upload, 4)
+        XCTAssertFalse(scheduler.hasPendingWork)
+    }
+
+    func testProductionAnalyticsClearRejectsBlockedPreClearCompletionAndRestartsWithBaseline() throws {
+        let old = self.pidReuseFixture(download: 100, upload: 10)
+        let firstAfterClear = self.pidReuseFixture(download: 200, upload: 20)
+        let secondAfterClear = self.pidReuseFixture(download: 230, upload: 24)
+        let runner = BlockingNettopRunner(
+            blockedResult: .success(old),
+            remainingResults: [.success(firstAfterClear), .success(secondAfterClear)],
+            finishBlockedRunOnCancel: false
+        )
+        let provider = FakeProcessMetadataProvider(entries: [
+            77: ProcessMetadata(processID: 77, processName: "Helper", executablePath: "/Helper", processStartToken: 1)
+        ])
+        let reader = ProcessReader(
+            .network,
+            collector: NettopCollector(runner: runner),
+            counterBuilder: ProcessTrafficCounterBuilder(provider: provider)
+        )
+        let store = RecordingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+        let coordinator = TrafficAnalyticsCoordinator(
+            repository: repository,
+            resolver: ApplicationIdentityResolver(provider: provider),
+            clock: clock
+        )
+        coordinator.start()
+        reader.analyticsIngest = { coordinator.ingest(counters: $0) }
+
+        let oldReadFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            reader.read()
+            oldReadFinished.signal()
+        }
+        XCTAssertTrue(runner.waitUntilBlockedRunStarts())
+
+        let clearFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            try? reader.clearAnalyticsData {
+                try coordinator.clearAnalyticsData()
+            }
+            clearFinished.signal()
+        }
+        XCTAssertEqual(clearFinished.wait(timeout: .now() + 0.05), .timedOut)
+
+        runner.finishBlockedRun()
+        XCTAssertTrue(runner.waitUntilBlockedRunFinishes())
+        XCTAssertEqual(oldReadFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(clearFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: clock.now().addingTimeInterval(-1),
+            end: clock.now().addingTimeInterval(1)
+        )).isEmpty)
+
+        reader.read()
+        XCTAssertTrue(repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: clock.now().addingTimeInterval(-1),
+            end: clock.now().addingTimeInterval(1)
+        )).isEmpty)
+
+        clock.advance(by: 1)
+        reader.read()
+
+        let samples = repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: Date(timeIntervalSince1970: 1_800_000_000),
+            end: Date(timeIntervalSince1970: 1_800_000_001)
+        ))
+        XCTAssertEqual(samples.map(\.delta), [TrafficDelta(download: 30, upload: 4)])
+        XCTAssertEqual(coordinator.snapshot().samplesWritten, 1)
+        XCTAssertEqual(runner.cancelCount, 1)
+    }
+
+    func testProcessReaderTerminateStopsAnalyticsOnce() {
+        let reader = ProcessReader(
+            .network,
+            collector: NettopCollector(runner: RecordingNettopRunner(results: [])),
+            counterBuilder: ProcessTrafficCounterBuilder(provider: FakeProcessMetadataProvider(entries: [:]))
+        )
+        var stops = 0
+        reader.analyticsStop = { stops += 1 }
+
+        reader.terminate()
+
+        XCTAssertEqual(stops, 1)
+    }
+
+    func testProcessReaderLifecycleRestartsAnalyticsAfterDisable() {
+        let reader = ProcessReader(
+            .network,
+            collector: NettopCollector(runner: RecordingNettopRunner(results: [
+                .success(self.pidReuseFixture(download: 1, upload: 1))
+            ])),
+            counterBuilder: ProcessTrafficCounterBuilder(provider: FakeProcessMetadataProvider(entries: [:]))
+        )
+        var starts = 0
+        var stops = 0
+        reader.analyticsStart = { starts += 1 }
+        reader.analyticsStop = { stops += 1 }
+
+        reader.stop()
+        reader.start()
+
+        XCTAssertEqual(stops, 1)
+        XCTAssertEqual(starts, 1)
+    }
+
+    func testNettopCollectorRejectsOutputWithoutUsableRows() {
+        let outputs = [
+            ",interface,bytes_in,bytes_out,\n",
+            ",interface,bytes_in,bytes_out,\nbroken.1,en0,nope,2,\n",
+            ",interface,bytes_in,bytes_out,\ntcp4 a<->b,en0,10,2,\n"
+        ]
+
+        for (index, output) in outputs.enumerated() {
+            let collector = NettopCollector(runner: RecordingNettopRunner(results: [.success(output)]))
+            XCTAssertThrowsError(try collector.snapshot()) { error in
+                let expected: NettopCollectionError = index == 0 ? .emptyOutput : .malformedOutput(1)
+                XCTAssertEqual(error as? NettopCollectionError, expected)
+            }
+        }
+    }
+
+    func testLegacyAggregateWithoutSampleCountRemainsUnknown() throws {
+        let store = RecordingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let sample = self.sample(at: timestamp, network: NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi), applicationID: "app", download: 10, upload: 2)
+        let key = "net.analytics.v1|minute|00000000001700000000|wifi|app"
+        try store.writeAtomically(puts: [(key, try self.encode(sample))], deletes: [])
+
+        let records = repository.fetchRecords(TrafficHistoryQuery(level: .minute, start: timestamp, end: timestamp))
+        XCTAssertEqual(records.first?.sampleCount, nil)
+    }
+
+    func testHistoryRepositorySerializesStoreAccessOnItsOwnerQueue() {
+        let key = DispatchSpecificKey<String>()
+        let queue = DispatchQueue(label: "tests.analytics.owner")
+        queue.setSpecific(key: key, value: "owner")
+        let store = RecordingTrafficStore(queueKey: key, expectedQueueValue: "owner")
+        let repository = TrafficHistoryRepository(store: store, queue: queue)
+        let sample = self.sample(at: Date(timeIntervalSince1970: 10), network: NetworkIdentity(id: "n", displayName: "N", interfaceName: "en0", kind: .wifi), applicationID: "a", download: 1, upload: 1)
+
+        XCTAssertSuccess(repository.ingest([sample]))
+        _ = repository.fetch(TrafficHistoryQuery(level: .second, start: sample.timestamp, end: sample.timestamp))
+        XCTAssertTrue(store.accessesAllOnExpectedQueue)
+    }
+
+    func testHistoryReplacementCommitsDestinationsAndSourceDeletesAtomically() throws {
+        let store = RecordingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let timestamp = Date(timeIntervalSince1970: 100)
+        let source = self.sample(at: timestamp, network: network, applicationID: "app", download: 1, upload: 1)
+        XCTAssertSuccess(repository.ingest([source]))
+        let sourceKeys = store.keys(prefix: "net.analytics.v2|second|")
+
+        let destination = self.sample(at: timestamp, network: network, applicationID: "app", download: 2, upload: 2)
+        try repository.replaceAtomically(level: .minute, samples: [destination], deleting: sourceKeys)
+
+        XCTAssertEqual(store.atomicWrites.last?.puts.count, 1)
+        XCTAssertEqual(store.atomicWrites.last?.deletes, sourceKeys)
+        XCTAssertTrue(store.keys(prefix: "net.analytics.v2|second|").isEmpty)
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v2|minute|").count, 1)
+    }
+
+    func testRawIngestMergesSameSecondSamplesAcrossBatchAndSequentialWrites() {
+        let store = RecordingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let timestamp = Date(timeIntervalSince1970: 100.25)
+        let first = self.sample(at: timestamp, network: network, applicationID: "app", processID: 7, processStartToken: 9, download: 10, upload: 2)
+        let second = self.sample(at: timestamp.addingTimeInterval(0.5), network: network, applicationID: "app", processID: 7, processStartToken: 9, download: 20, upload: 3)
+        let third = self.sample(at: timestamp.addingTimeInterval(0.7), network: network, applicationID: "app", processID: 7, processStartToken: 9, download: 5, upload: 4)
+
+        XCTAssertSuccess(repository.ingest([first, second]))
+        XCTAssertSuccess(repository.ingest([third]))
+
+        let records = repository.fetchRecords(TrafficHistoryQuery(
+            level: .second,
+            start: Date(timeIntervalSince1970: 100),
+            end: Date(timeIntervalSince1970: 101)
+        ))
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v2|second|").count, 1)
+        XCTAssertEqual(records.count, 1)
+        guard let record = records.first else { return }
+        XCTAssertEqual(record.sample.delta, TrafficDelta(download: 35, upload: 9))
+        XCTAssertEqual(record.sample.peakBytesPerSecond, 23)
+        XCTAssertEqual(record.sampleCount, 3)
+        XCTAssertEqual(record.processSummaries?.map(\.sampleCount), [3])
+    }
+
+    func testCoordinatorRetryMergesPendingAndNewSameSecondSampleWithoutDuplicateKeyFailure() {
+        let store = RecordingTrafficStore()
+        store.failNextWrite = true
+        let repository = TrafficHistoryRepository(store: store)
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 100.1))
+        let coordinator = TrafficAnalyticsCoordinator(repository: repository, clock: clock)
+        coordinator.start()
+
+        coordinator.ingest(counters: [ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 42,
+            processStartToken: 1,
+            isDelta: true,
+            download: 10,
+            upload: 1
+        )])
+        clock.advance(by: 0.5)
+        coordinator.ingest(counters: [ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 42,
+            processStartToken: 1,
+            isDelta: true,
+            download: 20,
+            upload: 2
+        )])
+
+        let records = repository.fetchRecords(TrafficHistoryQuery(
+            level: .second,
+            start: Date(timeIntervalSince1970: 100),
+            end: Date(timeIntervalSince1970: 101)
+        ))
+        XCTAssertEqual(store.atomicWrites.count, 1)
+        XCTAssertEqual(store.atomicWrites[0].puts.count, 1)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].sample.delta, TrafficDelta(download: 30, upload: 3))
+        XCTAssertEqual(records[0].sampleCount, 2)
+        XCTAssertEqual(coordinator.snapshot().samplesWritten, 2)
+        XCTAssertNil(coordinator.snapshot().lastError)
+    }
+
+    func testAtomicIngestFailureProducesNoCommittedBatch() {
+        let store = RecordingTrafficStore()
+        store.failNextWrite = true
+        let repository = TrafficHistoryRepository(store: store)
+        let sample = self.sample(at: Date(timeIntervalSince1970: 100), network: NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi), applicationID: "app", download: 1, upload: 1)
+
+        XCTAssertFailure(repository.ingest([sample]))
+        XCTAssertTrue(repository.fetch(TrafficHistoryQuery(level: .second, start: sample.timestamp, end: sample.timestamp)).isEmpty)
+    }
+
+    func testDBRawBatchRejectsDuplicatePutKeysWithoutCrashing() {
+        XCTAssertThrowsError(try DB.shared.writeRawAtomically(
+            puts: [("duplicate", "first"), ("duplicate", "second")],
+            deletes: []
+        )) { error in
+            XCTAssertEqual(error as? DB.RawWriteError, .duplicateKey("duplicate"))
+        }
+    }
+
+    func testFailedAtomicReplacementNeverPublishesPartialDestinationOrSourceDeletion() throws {
+        let store = IsolatedTransactionTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let timestamp = Date(timeIntervalSince1970: 100)
+        let source = self.sample(at: timestamp, network: network, applicationID: "app", download: 1, upload: 1)
+        XCTAssertSuccess(repository.ingest([source]))
+        let sourceKeys = store.keys(prefix: "net.analytics.v2|second|")
+        store.failAfterApplyingToIsolatedTransaction = true
+
+        let destination = self.sample(at: timestamp, network: network, applicationID: "app", download: 2, upload: 2)
+        XCTAssertThrowsError(try repository.replaceAtomically(
+            level: .minute,
+            samples: [destination],
+            deleting: sourceKeys
+        ))
+
+        XCTAssertEqual(store.lastAttempt?.puts.count, 1)
+        XCTAssertEqual(store.lastAttempt?.deletes, sourceKeys)
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v2|second|"), sourceKeys)
+        XCTAssertTrue(store.keys(prefix: "net.analytics.v2|minute|").isEmpty)
+        XCTAssertEqual(repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: timestamp,
+            end: timestamp
+        )), [source])
+        XCTAssertTrue(repository.fetch(TrafficHistoryQuery(
+            level: .minute,
+            start: timestamp,
+            end: timestamp
+        )).isEmpty)
+    }
+
+    func testDeleteTrafficHistoryUsesDelimiterBoundedNamespaces() throws {
+        let store = RecordingTrafficStore()
+        try store.writeAtomically(puts: [
+            ("net.analytics.v1|second|legacy", "legacy"),
+            ("net.analytics.v2|second|current", "current"),
+            ("net.analytics.v10|second|other", "other-v10"),
+            ("net.analytics.v20|second|other", "other-v20")
+        ], deletes: [])
+        let repository = TrafficHistoryRepository(store: store)
+
+        try repository.deleteTrafficHistory()
+
+        XCTAssertTrue(store.keys(prefix: "net.analytics.v1|").isEmpty)
+        XCTAssertTrue(store.keys(prefix: "net.analytics.v2|").isEmpty)
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v10|"), ["net.analytics.v10|second|other"])
+        XCTAssertEqual(store.keys(prefix: "net.analytics.v20|"), ["net.analytics.v20|second|other"])
+    }
+
+    func testCompactionPropagatesReplacementFailure() {
+        let store = RecordingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertSuccess(repository.ingest([
+            self.sample(at: now.addingTimeInterval(-2 * 60), network: network, applicationID: "app", download: 1, upload: 1)
+        ]))
+        store.failNextWrite = true
+
+        XCTAssertThrowsError(try TrafficAggregation.compact(
+            repository: repository,
+            now: now,
+            policy: TrafficRetentionPolicy(secondRetention: 60, minuteRetention: 60 * 60, hourRetention: 24 * 60 * 60)
+        )) { error in
+            XCTAssertTrue(error is TrafficPersistenceError)
+        }
+    }
+
+    func testDeleteTrafficHistoryPreservesAlertsRulesAndPreferences() throws {
+        let suiteName = "net.analytics.delete.traffic.tests"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let alertStore = TrafficAlertStore(defaults: defaults)
+        alertStore.append([TrafficAlertEvent(kind: .quota, message: "quota")])
+        let rules = TrafficRuleStore(defaults: defaults)
+        rules.save(networkPlan: NetworkPlan(billingCycleDay: 3, byteLimit: 99, thresholds: [50]))
+        rules.markNotified(thresholds: [50], scope: "network")
+        let preferences = TrafficAnalyticsPreferencesStore(defaults: defaults)
+        var value = preferences.preferences()
+        value.minuteRetentionDays = 14
+        preferences.save(value)
+        let repository = TrafficHistoryRepository(store: RecordingTrafficStore(), alertStore: alertStore, ruleStore: rules)
+        XCTAssertSuccess(repository.ingest([self.sample(at: Date(), network: NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi), applicationID: "app", download: 1, upload: 1)]))
+
+        try repository.deleteTrafficHistory()
+        XCTAssertEqual(alertStore.all().count, 1)
+        XCTAssertEqual(rules.networkPlan().billingCycleDay, 3)
+        XCTAssertEqual(rules.notifiedThresholds(for: "network"), [50])
+        XCTAssertEqual(preferences.preferences().minuteRetentionDays, 14)
+    }
+
+    func testClearAnalyticsDataRemovesTrafficAlertsAndRuntimeStateButPreservesPreferences() throws {
+        let suiteName = "net.analytics.clear.tests"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let alertStore = TrafficAlertStore(defaults: defaults)
+        alertStore.append([TrafficAlertEvent(kind: .quota, message: "quota")])
+        let rules = TrafficRuleStore(defaults: defaults)
+        let plan = NetworkPlan(billingCycleDay: 7, byteLimit: 100, thresholds: [80])
+        rules.save(networkPlan: plan)
+        let appRule = ApplicationTrafficRule(applicationID: "app", byteLimit: 50)
+        rules.save(applicationRules: [appRule])
+        rules.includeLocalNetwork = false
+        rules.markNotified(thresholds: [80], scope: "network")
+        defaults.set(["app": "Alias"], forKey: "net.analytics.aliases.v1")
+        let preferences = TrafficAnalyticsPreferencesStore(defaults: defaults)
+        var value = preferences.preferences()
+        value.hourRetentionDays = 90
+        preferences.save(value)
+        let repository = TrafficHistoryRepository(store: RecordingTrafficStore(), alertStore: alertStore, ruleStore: rules)
+        XCTAssertSuccess(repository.ingest([self.sample(at: Date(), network: NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi), applicationID: "app", download: 1, upload: 1)]))
+
+        try repository.clearAnalyticsData()
+        XCTAssertTrue(alertStore.all().isEmpty)
+        XCTAssertTrue(rules.notifiedThresholds(for: "network").isEmpty)
+        XCTAssertEqual(rules.networkPlan(), plan)
+        XCTAssertEqual(rules.applicationRules(), [appRule])
+        XCTAssertFalse(rules.includeLocalNetwork)
+        XCTAssertEqual(preferences.preferences().hourRetentionDays, 90)
+        XCTAssertEqual(defaults.dictionary(forKey: "net.analytics.aliases.v1") as? [String: String], ["app": "Alias"])
+    }
+
+    func testSettingsDelegatesConfirmedAnalyticsClearToInjectedService() throws {
+        let settings = Settings(.network)
+        var clearCalls = 0
+        settings.clearAnalyticsHistoryCallback = { clearCalls += 1 }
+
+        try settings.performAnalyticsClear()
+
+        XCTAssertEqual(clearCalls, 1)
+    }
+
     private func sample(
         at timestamp: Date,
         network: NetworkIdentity,
         applicationID: String,
+        processID: Int32 = 1,
+        processName: String? = nil,
+        processStartToken: UInt64 = 1,
         download: UInt64,
         upload: UInt64
     ) -> TrafficSample {
@@ -888,10 +2562,61 @@ final class NetAnalyticsTests: XCTestCase {
                 executablePath: nil
             ),
             network: network,
-            processID: 1,
+            processID: processID,
+            processName: processName,
+            processStartToken: processStartToken,
+            processDiscriminator: "\(applicationID)|\(processID)|\(processStartToken)",
             delta: TrafficDelta(download: download, upload: upload),
             peakBytesPerSecond: download + upload
         )
+    }
+
+    private func sample(from counter: ProcessTrafficCounter) -> TrafficSample {
+        TrafficSample(
+            timestamp: Date(),
+            application: counter.identity,
+            network: NetworkIdentity(
+                id: "iface:\(counter.interfaceName ?? "unknown")",
+                displayName: counter.interfaceName ?? "Unknown",
+                interfaceName: counter.interfaceName ?? "unknown",
+                kind: TrafficAnalyticsCoordinator.networkKind(
+                    interfaceName: counter.interfaceName ?? "unknown",
+                    displayName: counter.interfaceName ?? "Unknown",
+                    wifiSSID: nil
+                )
+            ),
+            processID: counter.processID,
+            processStartToken: counter.processStartToken,
+            processDiscriminator: counter.processDiscriminator,
+            delta: TrafficDelta(download: counter.download, upload: counter.upload),
+            peakBytesPerSecond: counter.download + counter.upload
+        )
+    }
+
+    private func encode<T: Encodable>(_ value: T) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return String(data: try encoder.encode(value), encoding: .utf8)!
+    }
+
+    private var connectionFixture: String {
+        """
+        ,interface,bytes_in,bytes_out,
+        Client Helper.55,,1000,200,
+        tcp4 10.0.0.2:1<->1.1.1.1:443,en0,100,20,
+        tcp4 10.0.0.2:1<->1.1.1.1:443,en0,100,20,
+        tcp4 10.0.0.2:2<->10.0.0.1:443,utun4,50,10,
+        udp4 10.0.0.2:3<->8.8.8.8:53,en0,25,5,
+        udp4 *:4<->*:*, ,5,1,
+        """
+    }
+
+    private func pidReuseFixture(download: UInt64, upload: UInt64) -> String {
+        """
+        ,interface,bytes_in,bytes_out,
+        Helper.77,,\(download),\(upload),
+        tcp4 a<->b,en0,\(download),\(upload),
+        """
     }
 
     private func counter(
@@ -922,5 +2647,387 @@ private struct FakeProcessMetadataProvider: ProcessMetadataProviding {
             return entry
         }
         return ProcessMetadata(processID: processID, processName: fallbackName)
+    }
+}
+
+private final class MutableProcessMetadataProvider: ProcessMetadataProviding {
+    var entry: ProcessMetadata
+
+    init(entry: ProcessMetadata) {
+        self.entry = entry
+    }
+
+    func metadata(for processID: Int32, fallbackName: String) -> ProcessMetadata {
+        self.entry.processID == processID
+            ? self.entry
+            : ProcessMetadata(processID: processID, processName: fallbackName)
+    }
+}
+
+private final class MutableTrafficClock: TrafficClock {
+    private(set) var current: Date
+
+    init(now: Date) {
+        self.current = now
+    }
+
+    func now() -> Date {
+        self.current
+    }
+
+    func advance(by interval: TimeInterval) {
+        self.current = self.current.addingTimeInterval(interval)
+    }
+}
+
+private final class ManualProcessReadScheduler: ProcessReadScheduling {
+    private let clock: MutableTrafficClock
+    private var work: [(delay: TimeInterval, block: () -> Void)] = []
+    private(set) var delays: [TimeInterval] = []
+    var hasPendingWork: Bool { !self.work.isEmpty }
+
+    init(clock: MutableTrafficClock) {
+        self.clock = clock
+    }
+
+    func schedule(after delay: TimeInterval, _ block: @escaping () -> Void) {
+        self.delays.append(delay)
+        self.work.append((delay, block))
+    }
+
+    func runNext() {
+        guard !self.work.isEmpty else {
+            XCTFail("Expected scheduled process read")
+            return
+        }
+        let next = self.work.removeFirst()
+        self.clock.advance(by: next.delay)
+        next.block()
+    }
+}
+
+private enum RecordingTrafficStoreError: Error {
+    case injected
+}
+
+private final class RecordingTrafficStore: TrafficKeyValueStoring {
+    struct AtomicWrite {
+        let puts: [(key: String, value: String)]
+        let deletes: [String]
+    }
+
+    private var storage: [String: String] = [:]
+    private let lock = NSLock()
+    private let queueKey: DispatchSpecificKey<String>?
+    private let expectedQueueValue: String?
+    private(set) var atomicWrites: [AtomicWrite] = []
+    private(set) var attemptedWrites: [AtomicWrite] = []
+    private(set) var accessesAllOnExpectedQueue = true
+    var failNextWrite = false
+    var failAllWrites = false
+
+    init(queueKey: DispatchSpecificKey<String>? = nil, expectedQueueValue: String? = nil) {
+        self.queueKey = queueKey
+        self.expectedQueueValue = expectedQueueValue
+    }
+
+    func writeAtomically(puts: [(key: String, value: String)], deletes: [String]) throws {
+        self.recordQueue()
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        let write = AtomicWrite(puts: puts, deletes: deletes)
+        self.attemptedWrites.append(write)
+        if self.failAllWrites {
+            throw RecordingTrafficStoreError.injected
+        }
+        if self.failNextWrite {
+            self.failNextWrite = false
+            throw RecordingTrafficStoreError.injected
+        }
+        var next = self.storage
+        puts.forEach { next[$0.key] = $0.value }
+        deletes.forEach { next.removeValue(forKey: $0) }
+        self.storage = next
+        self.atomicWrites.append(write)
+    }
+
+    func get(key: String) -> String? {
+        self.recordQueue()
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.storage[key]
+    }
+
+    func values(prefix: String) -> [String] {
+        self.recordQueue()
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.storage.filter { $0.key.hasPrefix(prefix) }.sorted { $0.key < $1.key }.map(\.value)
+    }
+
+    func keys(prefix: String) -> [String] {
+        self.recordQueue()
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.storage.keys.filter { $0.hasPrefix(prefix) }.sorted()
+    }
+
+    private func recordQueue() {
+        guard let queueKey, let expectedQueueValue else { return }
+        if DispatchQueue.getSpecific(key: queueKey) != expectedQueueValue {
+            self.accessesAllOnExpectedQueue = false
+        }
+    }
+}
+
+private final class BlockingTrafficStore: TrafficKeyValueStoring {
+    private let store = InMemoryTrafficStore()
+    private let writeStarted = DispatchSemaphore(value: 0)
+    private let allowWrite = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var shouldBlock = true
+
+    func writeAtomically(puts: [(key: String, value: String)], deletes: [String]) throws {
+        self.lock.lock()
+        let block = self.shouldBlock
+        if block { self.shouldBlock = false }
+        self.lock.unlock()
+        if block {
+            self.writeStarted.signal()
+            self.allowWrite.wait()
+        }
+        try self.store.writeAtomically(puts: puts, deletes: deletes)
+    }
+
+    func get(key: String) -> String? {
+        self.store.get(key: key)
+    }
+
+    func values(prefix: String) -> [String] {
+        self.store.values(prefix: prefix)
+    }
+
+    func keys(prefix: String) -> [String] {
+        self.store.keys(prefix: prefix)
+    }
+
+    func waitUntilWriteStarts() -> Bool {
+        self.writeStarted.wait(timeout: .now() + 1) == .success
+    }
+
+    func finishBlockedWrite() {
+        self.allowWrite.signal()
+    }
+}
+
+private final class BlockingNettopRunner: NettopRunning {
+    private let lock = NSLock()
+    private let runStarted = DispatchSemaphore(value: 0)
+    private let allowBlockedRunToFinish = DispatchSemaphore(value: 0)
+    private let blockedRunFinished = DispatchSemaphore(value: 0)
+    private let blockedResult: Result<String, NettopCollectionError>
+    private var remainingResults: [Result<String, NettopCollectionError>]
+    private let finishBlockedRunOnCancel: Bool
+    private var _cancelCount = 0
+    private var _runCount = 0
+
+    var cancelCount: Int {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self._cancelCount
+    }
+
+    var runCount: Int {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self._runCount
+    }
+
+    init(
+        blockedResult: Result<String, NettopCollectionError>,
+        remainingResults: [Result<String, NettopCollectionError>],
+        finishBlockedRunOnCancel: Bool = true
+    ) {
+        self.blockedResult = blockedResult
+        self.remainingResults = remainingResults
+        self.finishBlockedRunOnCancel = finishBlockedRunOnCancel
+    }
+
+    func run(
+        command: NettopCommand,
+        timeout: TimeInterval,
+        cancellation: NettopCancellation
+    ) throws -> String {
+        self.lock.lock()
+        self._runCount += 1
+        let runNumber = self._runCount
+        let result: Result<String, NettopCollectionError>
+        if runNumber == 1 {
+            result = self.blockedResult
+        } else {
+            result = self.remainingResults.removeFirst()
+        }
+        self.lock.unlock()
+
+        if runNumber == 1 {
+            self.runStarted.signal()
+            self.allowBlockedRunToFinish.wait()
+            self.blockedRunFinished.signal()
+        }
+        return try result.get()
+    }
+
+    func cancel() {
+        self.lock.lock()
+        self._cancelCount += 1
+        let shouldFinish = self.finishBlockedRunOnCancel
+        self.lock.unlock()
+        if shouldFinish {
+            self.allowBlockedRunToFinish.signal()
+        }
+    }
+
+    func waitUntilBlockedRunStarts() -> Bool {
+        self.runStarted.wait(timeout: .now() + 1) == .success
+    }
+
+    func waitUntilBlockedRunFinishes() -> Bool {
+        self.blockedRunFinished.wait(timeout: .now() + 1) == .success
+    }
+
+    func finishBlockedRun() {
+        self.allowBlockedRunToFinish.signal()
+    }
+}
+
+private final class RecordingNettopRunner: NettopRunning {
+    private var results: [Result<String, NettopCollectionError>]
+    private(set) var commands: [NettopCommand] = []
+    private(set) var timeouts: [TimeInterval] = []
+
+    init(results: [Result<String, NettopCollectionError>]) {
+        self.results = results
+    }
+
+    func run(
+        command: NettopCommand,
+        timeout: TimeInterval,
+        cancellation: NettopCancellation
+    ) throws -> String {
+        self.commands.append(command)
+        self.timeouts.append(timeout)
+        return try self.results.removeFirst().get()
+    }
+
+    func cancel() {}
+}
+
+private final class RecordingNettopExecution: NettopProcessExecuting {
+    enum Event: Equatable {
+        case start
+        case waitForExit(TimeInterval)
+        case terminate
+        case interrupt
+        case kill
+        case closeReaders
+        case waitForReaders(TimeInterval)
+    }
+
+    private var waits: [Bool]
+    private var readerWaits: [Bool]
+    private(set) var events: [Event] = []
+    private(set) var usedUnboundedWait = false
+    var outputData = Data()
+    var errorData = Data()
+
+    init(waits: [Bool], readerWaits: [Bool]) {
+        self.waits = waits
+        self.readerWaits = readerWaits
+    }
+
+    func start(command: NettopCommand) throws {
+        self.events.append(.start)
+    }
+
+    func waitForExit(timeout: TimeInterval) -> Bool {
+        self.events.append(.waitForExit(timeout))
+        return self.waits.removeFirst()
+    }
+
+    func terminate() {
+        self.events.append(.terminate)
+    }
+
+    func interrupt() {
+        self.events.append(.interrupt)
+    }
+
+    func kill() {
+        self.events.append(.kill)
+    }
+
+    func closeReaders() {
+        self.events.append(.closeReaders)
+    }
+
+    func waitForReaders(timeout: TimeInterval) -> Bool {
+        self.events.append(.waitForReaders(timeout))
+        return self.readerWaits.removeFirst()
+    }
+}
+
+private final class IsolatedTransactionTrafficStore: TrafficKeyValueStoring {
+    struct Attempt {
+        let puts: [(key: String, value: String)]
+        let deletes: [String]
+    }
+
+    private var committed: [String: String] = [:]
+    private let lock = NSLock()
+    private(set) var lastAttempt: Attempt?
+    var failAfterApplyingToIsolatedTransaction = false
+
+    func writeAtomically(puts: [(key: String, value: String)], deletes: [String]) throws {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        self.lastAttempt = Attempt(puts: puts, deletes: deletes)
+        var transaction = self.committed
+        puts.forEach { transaction[$0.key] = $0.value }
+        deletes.forEach { transaction.removeValue(forKey: $0) }
+        if self.failAfterApplyingToIsolatedTransaction {
+            self.failAfterApplyingToIsolatedTransaction = false
+            throw RecordingTrafficStoreError.injected
+        }
+        self.committed = transaction
+    }
+
+    func get(key: String) -> String? {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.committed[key]
+    }
+
+    func values(prefix: String) -> [String] {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.committed.filter { $0.key.hasPrefix(prefix) }.sorted { $0.key < $1.key }.map(\.value)
+    }
+
+    func keys(prefix: String) -> [String] {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.committed.keys.filter { $0.hasPrefix(prefix) }.sorted()
+    }
+}
+
+private func XCTAssertSuccess<T, E>(_ result: Result<T, E>, file: StaticString = #filePath, line: UInt = #line) {
+    if case .failure(let error) = result {
+        XCTFail("Expected success, got \(error)", file: file, line: line)
+    }
+}
+
+private func XCTAssertFailure<T, E>(_ result: Result<T, E>, file: StaticString = #filePath, line: UInt = #line) {
+    if case .success = result {
+        XCTFail("Expected failure", file: file, line: line)
     }
 }

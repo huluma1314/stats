@@ -130,15 +130,24 @@ using namespace std;
 }
 
 -(bool)deleteMany:(NSArray*)keys {
+    return [self writeBatch:@{} deletes:keys];
+}
+
+-(bool)writeBatch:(NSDictionary*)puts deletes:(NSArray*)keys {
     leveldb::WriteBatch batch;
-    
-    for (int i=0; i <[keys count]; i++) {
-        NSString *key = [keys objectAtIndex:i];
-        leveldb::Slice slice = leveldb::Slice(key.UTF8String);
-        batch.Delete(slice);
+
+    for (NSString *key in puts) {
+        NSString *value = [puts objectForKey:key];
+        batch.Put(leveldb::Slice(key.UTF8String), leveldb::Slice(value.UTF8String));
     }
-    
+    for (NSString *key in keys) {
+        batch.Delete(leveldb::Slice(key.UTF8String));
+    }
+
     leveldb::Status s = self->db->Write(leveldb::WriteOptions(), &batch);
+    if (!s.ok()) {
+        NSLog(@"ERROR: Unable to commit database batch: %s", s.ToString().c_str());
+    }
     return s.ok();
 }
 

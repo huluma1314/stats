@@ -148,9 +148,7 @@ public class Network: Module {
     private var usageReader: UsageReader? = nil
     private var processReader: ProcessReader? = nil
     private var connectivityReader: ConnectivityReader? = nil
-    private let analyticsCoordinator = TrafficAnalyticsCoordinator(
-        repository: TrafficHistoryRepository(store: LevelDBTrafficStore())
-    )
+    private let analyticsCoordinator: TrafficAnalyticsCoordinator
     
     private let ipUpdater = NSBackgroundActivityScheduler(identifier: "eu.exelban.Stats.Network.IP")
     
@@ -175,11 +173,13 @@ public class Network: Module {
     }
     
     public init() {
+        let analyticsRepository = TrafficHistoryRepository(store: LevelDBTrafficStore())
+        self.analyticsCoordinator = TrafficAnalyticsCoordinator(repository: analyticsRepository)
         self.settingsView = Settings(.network)
         self.popupView = Popup(.network)
         self.portalView = Portal(.network)
         self.notificationsView = Notifications(.network)
-        self.previewView = Preview(.network)
+        self.previewView = Preview(.network, analyticsRepository: analyticsRepository)
         
         super.init(
             moduleType: .network,
@@ -205,10 +205,18 @@ public class Network: Module {
         self.processReader?.analyticsFailure = { [weak self] message in
             self?.analyticsCoordinator.recordFailure(message)
         }
+        self.processReader?.analyticsStart = { [weak self] in
+            self?.analyticsCoordinator.start()
+        }
+        self.processReader?.analyticsStop = { [weak self] in
+            guard let self else { return }
+            if !self.analyticsCoordinator.stop() {
+                error("Network analytics stopped with unpersisted history: \(self.analyticsCoordinator.snapshot().lastError ?? "unknown error")")
+            }
+        }
         self.connectivityReader = ConnectivityReader(.network) { [weak self] value in
             self?.connectivityCallback(value)
         }
-        self.analyticsCoordinator.start()
         
         self.settingsView.callbackWhenUpdateNumberOfProcesses = { [weak self] in
             guard let self else { return }
@@ -236,6 +244,16 @@ public class Network: Module {
         }
         self.settingsView.publicIPRefreshIntervalCallback = { [weak self] in
             self?.setIPUpdater()
+        }
+        self.settingsView.clearAnalyticsHistoryCallback = { [weak self] in
+            guard let self else { return }
+            if let processReader = self.processReader {
+                try processReader.clearAnalyticsData {
+                    try self.analyticsCoordinator.clearAnalyticsData()
+                }
+            } else {
+                try self.analyticsCoordinator.clearAnalyticsData()
+            }
         }
         
         self.setReaders([self.usageReader, self.processReader, self.connectivityReader])

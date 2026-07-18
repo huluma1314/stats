@@ -14,6 +14,7 @@ public struct ProcessMetadata: Equatable {
     public let bundleURL: URL?
     public let executablePath: String?
     public let parentProcessID: Int32?
+    public let processStartToken: UInt64?
 
     public init(
         processID: Int32,
@@ -21,7 +22,8 @@ public struct ProcessMetadata: Equatable {
         bundleIdentifier: String? = nil,
         bundleURL: URL? = nil,
         executablePath: String? = nil,
-        parentProcessID: Int32? = nil
+        parentProcessID: Int32? = nil,
+        processStartToken: UInt64? = nil
     ) {
         self.processID = processID
         self.processName = processName
@@ -29,6 +31,7 @@ public struct ProcessMetadata: Equatable {
         self.bundleURL = bundleURL
         self.executablePath = executablePath
         self.parentProcessID = parentProcessID
+        self.processStartToken = processStartToken
     }
 }
 
@@ -84,6 +87,7 @@ public struct ApplicationIdentityResolver {
                 fallbackName: counter.identity.displayName
             )
             let process = ProcessTrafficSummary(
+                processDiscriminator: counter.processDiscriminator,
                 processID: counter.processID,
                 processName: counter.identity.displayName,
                 download: counter.download,
@@ -111,7 +115,12 @@ public struct ApplicationIdentityResolver {
                     download: $0.download,
                     upload: $0.upload,
                     peakBytesPerSecond: $0.peak,
-                    processes: $0.processes.sorted { $0.processID < $1.processID }
+                    processes: $0.processes.sorted {
+                        if $0.processID == $1.processID {
+                            return ($0.processDiscriminator ?? "") < ($1.processDiscriminator ?? "")
+                        }
+                        return $0.processID < $1.processID
+                    }
                 )
             }
             .sorted { lhs, rhs in
@@ -180,14 +189,17 @@ public struct AppKitProcessMetadataProvider: ProcessMetadataProviding {
     public func metadata(for processID: Int32, fallbackName: String) -> ProcessMetadata {
         let app = NSRunningApplication(processIdentifier: processID)
         let executablePath = app?.executableURL?.path ?? self.executablePath(for: processID)
-        let parent = self.parentProcessID(for: processID)
+        let bsdInfo = self.bsdInfo(for: processID)
         return ProcessMetadata(
             processID: processID,
             processName: app?.localizedName ?? fallbackName,
             bundleIdentifier: app?.bundleIdentifier,
             bundleURL: app?.bundleURL,
             executablePath: executablePath,
-            parentProcessID: parent
+            parentProcessID: bsdInfo.map { Int32($0.pbi_ppid) },
+            processStartToken: bsdInfo.map {
+                UInt64($0.pbi_start_tvsec) * 1_000_000 + UInt64($0.pbi_start_tvusec)
+            }
         )
     }
 
@@ -199,13 +211,13 @@ public struct AppKitProcessMetadataProvider: ProcessMetadataProviding {
         return String(cString: buffer)
     }
 
-    private func parentProcessID(for processID: Int32) -> Int32? {
+    private func bsdInfo(for processID: Int32) -> proc_bsdinfo? {
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.stride)
         let result = withUnsafeMutablePointer(to: &info) { pointer in
             proc_pidinfo(processID, PROC_PIDTBSDINFO, 0, pointer, size)
         }
         guard result == size else { return nil }
-        return Int32(info.pbi_ppid)
+        return info
     }
 }

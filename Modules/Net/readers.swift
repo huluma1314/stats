@@ -321,68 +321,25 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
     }
     
     private func readProcessBandwidth() -> Bandwidth {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        task.arguments = ["-P", "-L", "1", "-n", "-k", "time,interface,state,rx_dupe,rx_ooo,re-tx,rtt_avg,rcvsize,tx_win,tc_class,tc_mgt,cc_algo,P,C,R,W,arch"]
-        task.environment = [
-            "NSUnbufferedIO": "YES",
-            "LC_ALL": "en_US.UTF-8"
-        ]
-        
-        let inputPipe = Pipe()
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        
-        task.standardInput = inputPipe
-        task.standardOutput = outputPipe
-        task.standardError = errorPipe
-        
-        defer {
-            if task.isRunning {
-                task.terminate()
-            }
-            task.waitUntilExit()
-            inputPipe.fileHandleForWriting.closeFile()
-            outputPipe.fileHandleForReading.closeFile()
-            errorPipe.fileHandleForReading.closeFile()
-        }
-        
         do {
-            try task.run()
-        } catch let err {
-            error("read bandwidth from processes: \(err)", log: self.log)
+            let parsed = try NettopCollector(timeout: 5).snapshot()
+            let grouped = Dictionary(grouping: parsed.rows, by: \.processID)
+            var totalUpload: UInt64 = 0
+            var totalDownload: UInt64 = 0
+            for rows in grouped.values {
+                let children = rows.filter { !$0.isProcessSummary }
+                let source = children.isEmpty ? rows.filter(\.isProcessSummary) : children
+                totalDownload += source.reduce(UInt64(0)) { $0 + $1.download }
+                totalUpload += source.reduce(UInt64(0)) { $0 + $1.upload }
+            }
+            return Bandwidth(
+                upload: Int64(clamping: totalUpload),
+                download: Int64(clamping: totalDownload)
+            )
+        } catch {
+            Swift.print("read bandwidth from processes: \(error)")
             return Bandwidth()
         }
-        
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: outputData, encoding: .utf8)
-        _ = String(data: errorData, encoding: .utf8)
-        guard let output, !output.isEmpty else { return Bandwidth() }
-        
-        var totalUpload: Int64 = 0
-        var totalDownload: Int64 = 0
-        var firstLine = false
-        output.enumerateLines { (line, _) in
-            if !firstLine {
-                firstLine = true
-                return
-            }
-            
-            let parsedLine = line.split(separator: ",")
-            guard parsedLine.count >= 3 else {
-                return
-            }
-            
-            if let download = Int64(parsedLine[1]) {
-                totalDownload += download
-            }
-            if let upload = Int64(parsedLine[2]) {
-                totalUpload += upload
-            }
-        }
-        
-        return Bandwidth(upload: totalUpload, download: totalDownload)
     }
     
     private func requestDetails() {
@@ -708,11 +665,73 @@ internal class UsageReader: Reader<Network_Usage>, CWEventDelegate {
     }
 }
 
+public protocol ProcessReadScheduling: AnyObject {
+    func schedule(after delay: TimeInterval, _ block: @escaping () -> Void)
+}
+
+public final class DispatchProcessReadScheduler: ProcessReadScheduling {
+    private let queue: DispatchQueue
+
+    public init(queue: DispatchQueue = DispatchQueue.global(qos: .utility)) {
+        self.queue = queue
+    }
+
+    public func schedule(after delay: TimeInterval, _ block: @escaping () -> Void) {
+        self.queue.asyncAfter(deadline: .now() + delay, execute: block)
+    }
+}
+
 public class ProcessReader: Reader<[Network_Process]> {
     private let title: String = "Network"
     private var previous: [Network_Process] = []
+    private let collector: NettopCollector
+    private let counterBuilder: ProcessTrafficCounterBuilder
+    private enum CollectionState {
+        case idle
+        case reading
+        case retryScheduled
+    }
+
+    private let scheduler: ProcessReadScheduling
+    private let state = NSCondition()
+    private var consecutiveFailures = 0
+    private var collectionState = CollectionState.idle
+    private var lifecycleGeneration: UInt = 0
+    private var lifecycleActive = true
+    private var currentCancellation: NettopCancellation?
     public var analyticsIngest: (([ProcessTrafficCounter]) -> Void)?
     public var analyticsFailure: ((String) -> Void)?
+    public var analyticsStart: (() -> Void)?
+    public var analyticsStop: (() -> Void)?
+
+    public override convenience init(
+        _ module: ModuleType,
+        popup: Bool = false,
+        preview: Bool = false,
+        history: Bool = false,
+        callback: @escaping ([Network_Process]?) -> Void = { _ in }
+    ) {
+        self.init(
+            module,
+            collector: NettopCollector(),
+            counterBuilder: ProcessTrafficCounterBuilder(),
+            scheduler: DispatchProcessReadScheduler(),
+            callback: callback
+        )
+    }
+
+    init(
+        _ module: ModuleType,
+        collector: NettopCollector,
+        counterBuilder: ProcessTrafficCounterBuilder,
+        scheduler: ProcessReadScheduling = DispatchProcessReadScheduler(),
+        callback: @escaping ([Network_Process]?) -> Void = { _ in }
+    ) {
+        self.collector = collector
+        self.counterBuilder = counterBuilder
+        self.scheduler = scheduler
+        super.init(module, callback: callback)
+    }
     
     private var numberOfProcesses: Int {
         get {
@@ -725,85 +744,135 @@ public class ProcessReader: Reader<[Network_Process]> {
         // Popup rendering still consumes callbacks; analytics persistence does not.
         self.popup = false
     }
+
+    public override func start() {
+        self.state.lock()
+        if !self.lifecycleActive {
+            self.lifecycleGeneration &+= 1
+            self.counterBuilder.reset()
+            self.previous.removeAll()
+        }
+        self.lifecycleActive = true
+        self.state.unlock()
+        self.analyticsStart?()
+        super.start()
+    }
+
+    public override func stop() {
+        if self.stopCollection() {
+            self.analyticsStop?()
+        }
+        super.stop()
+    }
+
+    public override func terminate() {
+        if self.stopCollection() {
+            self.analyticsStop?()
+        }
+    }
+
+    public func resetTrafficBaselines() {
+        self.state.lock()
+        self.lifecycleGeneration &+= 1
+        self.counterBuilder.reset()
+        self.previous.removeAll()
+        self.state.unlock()
+    }
+
+    public func clearAnalyticsData(_ clear: () throws -> Void) throws {
+        self.state.lock()
+        let wasActive = self.lifecycleActive
+        self.lifecycleActive = false
+        self.lifecycleGeneration &+= 1
+        self.consecutiveFailures = 0
+        let cancellation = self.currentCancellation
+        if self.collectionState == .retryScheduled {
+            self.collectionState = .idle
+        }
+        self.state.unlock()
+
+        cancellation?.cancel()
+        self.collector.cancel()
+
+        self.state.lock()
+        while self.collectionState == .reading {
+            self.state.wait()
+        }
+        self.counterBuilder.reset()
+        self.previous.removeAll()
+        self.state.unlock()
+
+        defer {
+            self.state.lock()
+            self.lifecycleActive = wasActive
+            self.state.unlock()
+        }
+        try clear()
+    }
     
     public override func read() {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        task.arguments = ["-P", "-L", "1", "-n", "-k", "time,interface,state,rx_dupe,rx_ooo,re-tx,rtt_avg,rcvsize,tx_win,tc_class,tc_mgt,cc_algo,P,C,R,W,arch"]
-        task.environment = [
-            "NSUnbufferedIO": "YES",
-            "LC_ALL": "en_US.UTF-8"
-        ]
-        
-        let inputPipe = Pipe()
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        
-        task.standardInput = inputPipe
-        task.standardOutput = outputPipe
-        task.standardError = errorPipe
-        
-        defer {
-            if task.isRunning {
-                task.terminate()
-            }
-            task.waitUntilExit()
-            inputPipe.fileHandleForWriting.closeFile()
-            outputPipe.fileHandleForReading.closeFile()
-            errorPipe.fileHandleForReading.closeFile()
+        self.state.lock()
+        guard self.lifecycleActive, self.collectionState == .idle else {
+            self.state.unlock()
+            return
         }
-        
+        let generation = self.lifecycleGeneration
+        let cancellation = NettopCancellation()
+        self.currentCancellation = cancellation
+        self.collectionState = .reading
+        self.state.unlock()
+
+        let result: Result<NettopParseResult, Error>
         do {
-            try task.run()
-        } catch let error {
-            print(error)
-            self.analyticsFailure?(error.localizedDescription)
-            return
-        }
-        
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: outputData, encoding: .utf8)
-        _ = String(data: errorData, encoding: .utf8)
-        guard let output, !output.isEmpty else {
-            self.analyticsFailure?("empty nettop output")
-            return
+            result = .success(try self.collector.snapshot(cancellation: cancellation))
+        } catch {
+            result = .failure(error)
         }
 
-        let parsed = NettopSnapshotParser.parse(csv: output)
-        var list: [Network_Process] = []
-        var counters: [ProcessTrafficCounter] = []
-        for row in parsed.rows {
+        self.state.lock()
+        defer {
+            self.currentCancellation = nil
+            if self.collectionState == .reading {
+                self.collectionState = .idle
+            }
+            self.state.broadcast()
+            self.state.unlock()
+        }
+        guard self.lifecycleActive,
+              self.lifecycleGeneration == generation,
+              !cancellation.isCancelled else { return }
+
+        let parsed: NettopParseResult
+        switch result {
+        case .success(let value):
+            parsed = value
+        case .failure(let error):
+            self.handleCollectionFailureLocked(error, generation: generation)
+            return
+        }
+        self.consecutiveFailures = 0
+
+        let counters = self.counterBuilder.counters(rows: parsed.rows)
+        let summaries = Dictionary(grouping: parsed.rows, by: \.processID).compactMap { processID, rows -> Network_Process? in
+            let counterRows = rows.filter { !$0.isProcessSummary }
+            let source = counterRows.isEmpty ? rows : counterRows
+            guard let first = rows.first else { return nil }
             var process = Network_Process()
             process.time = Date()
-            process.pid = Int(row.processID)
+            process.pid = Int(processID)
             if let app = NSRunningApplication(processIdentifier: pid_t(process.pid)) {
-                process.name = app.localizedName ?? row.processName
+                process.name = app.localizedName ?? first.processName
             } else {
-                process.name = row.processName
+                process.name = first.processName
             }
             if process.name.isEmpty {
                 process.name = "\(process.pid)"
             }
-            process.download = Int(clamping: row.download)
-            process.upload = Int(clamping: row.upload)
-            list.append(process)
-
-            counters.append(
-                ProcessTrafficCounter(
-                    identity: ApplicationIdentity(
-                        id: "pid:\(row.processID)",
-                        displayName: process.name,
-                        bundleIdentifier: nil,
-                        executablePath: nil
-                    ),
-                    processID: row.processID,
-                    processStartToken: UInt64(row.processID),
-                    download: row.download,
-                    upload: row.upload
-                )
-            )
+            process.download = source.reduce(0) { $0 + Int(clamping: $1.download) }
+            process.upload = source.reduce(0) { $0 + Int(clamping: $1.upload) }
+            return process
         }
+        var list = summaries
 
         // Continuous analytics collection remains active even when the popup
         // process table is configured to show zero rows.
@@ -812,7 +881,7 @@ public class ProcessReader: Reader<[Network_Process]> {
         if self.numberOfProcesses == 0 {
             return
         }
-        
+
         var processes: [Network_Process] = []
         if self.previous.isEmpty {
             self.previous = list
@@ -821,31 +890,31 @@ public class ProcessReader: Reader<[Network_Process]> {
             self.previous.forEach { (pp: Network_Process) in
                 if let i = list.firstIndex(where: { $0.pid == pp.pid }) {
                     let p = list[i]
-                    
+
                     var download = p.download - pp.download
                     var upload = p.upload - pp.upload
                     let time = download == 0 && upload == 0 ? pp.time : Date()
                     list[i].time = time
-                    
+
                     if download < 0 {
                         download = 0
                     }
                     if upload < 0 {
                         upload = 0
                     }
-                    
+
                     processes.append(Network_Process(pid: p.pid, name: p.name, time: time, download: download, upload: upload))
                 }
             }
             self.previous = list
         }
-        
+
         processes.sort {
             let firstMax = max($0.download, $0.upload)
             let secondMax = max($1.download, $1.upload)
             let firstMin = min($0.download, $0.upload)
             let secondMin = min($1.download, $1.upload)
-            
+
             if firstMax == secondMax && firstMin == secondMin { // download and upload values are the same, sort by time
                 return $0.time < $1.time
             } else if firstMax == secondMax && firstMin != secondMin { // max values are the same, min not. Sort by min values
@@ -853,8 +922,52 @@ public class ProcessReader: Reader<[Network_Process]> {
             }
             return firstMax < secondMax // max values are not the same, sort by max value
         }
-        
+
         self.callback(processes.suffix(self.numberOfProcesses).reversed())
+    }
+
+    private func handleCollectionFailureLocked(_ collectionError: Error, generation: UInt) {
+        guard self.lifecycleActive, self.lifecycleGeneration == generation else { return }
+        self.consecutiveFailures += 1
+        let exponent = min(self.consecutiveFailures - 1, 5)
+        let delay = min(30, pow(2, Double(exponent)))
+        self.collectionState = .retryScheduled
+
+        let message = collectionError.localizedDescription
+        error("Network process collection failed; retrying in \(Int(delay))s: \(message)", log: self.log)
+        self.analyticsFailure?(message)
+        self.scheduler.schedule(after: delay) { [weak self] in
+            guard let self else { return }
+            self.state.lock()
+            guard self.lifecycleActive,
+                  self.collectionState == .retryScheduled,
+                  self.lifecycleGeneration == generation else {
+                self.state.unlock()
+                return
+            }
+            self.collectionState = .idle
+            self.state.unlock()
+            self.read()
+        }
+    }
+
+    private func stopCollection() -> Bool {
+        self.state.lock()
+        let wasActive = self.lifecycleActive
+        self.lifecycleActive = false
+        self.lifecycleGeneration &+= 1
+        self.consecutiveFailures = 0
+        self.counterBuilder.reset()
+        self.previous.removeAll()
+        let cancellation = self.currentCancellation
+        if self.collectionState == .retryScheduled {
+            self.collectionState = .idle
+        }
+        self.state.unlock()
+
+        cancellation?.cancel()
+        self.collector.cancel()
+        return wasActive
     }
 }
 

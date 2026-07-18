@@ -161,26 +161,27 @@ public final class TrafficAnalyticsEngine {
         let interval = query.selectedInterval ?? DateInterval(start: preset.start, end: preset.end)
         let effectiveRange = query.selectedInterval.map { TrafficCustomRange.range(for: $0.duration) } ?? query.range
         let level = self.storageLevel(for: effectiveRange)
-        var samples = self.repository.fetch(
+        var records = self.repository.fetchRecords(
             TrafficHistoryQuery(level: level, start: interval.start, end: interval.end)
         )
 
         if level != .second {
-            let finer = self.repository.fetch(
+            let finer = self.repository.fetchRecords(
                 TrafficHistoryQuery(level: .second, start: interval.start, end: interval.end)
             )
             if !finer.isEmpty {
-                samples.append(contentsOf: finer)
+                records.append(contentsOf: finer)
             }
         }
 
-        samples = self.deduplicate(samples)
+        records = self.deduplicate(records)
         if let kind = query.networkFilter {
-            samples = samples.filter { $0.network.kind == kind }
+            records = records.filter { $0.sample.network.kind == kind }
         }
         if !query.includeLocalNetwork {
-            samples = samples.filter { $0.network.kind != .other }
+            records = records.filter { $0.sample.network.kind != .other }
         }
+        let samples = records.map(\.sample)
         let download = samples.reduce(UInt64(0)) { $0 + $1.delta.download }
         let upload = samples.reduce(UInt64(0)) { $0 + $1.delta.upload }
         let buckets = TrafficAggregation.buckets(
@@ -190,7 +191,7 @@ public final class TrafficAnalyticsEngine {
             calendar: self.calendar,
             interval: interval
         )
-        let ranking = self.rank(samples: samples, search: query.applicationSearch)
+        let ranking = self.rank(records: records, search: query.applicationSearch)
         let forecast = self.forecast(
             samples: samples,
             billingCycleDay: query.billingCycleDay,
@@ -264,9 +265,19 @@ public final class TrafficAnalyticsEngine {
     }
 
     public func rank(samples: [TrafficSample], search: String = "") -> [ApplicationTrafficSummary] {
-        var grouped: [String: (identity: ApplicationIdentity, download: UInt64, upload: UInt64, peak: UInt64, processes: [Int32: ProcessTrafficSummary])] = [:]
+        self.rank(
+            records: samples.map {
+                StoredTrafficRecord(schema: .v2, level: .second, sample: $0, sampleCount: 1)
+            },
+            search: search
+        )
+    }
 
-        for sample in samples {
+    public func rank(records: [StoredTrafficRecord], search: String = "") -> [ApplicationTrafficSummary] {
+        var grouped: [String: (identity: ApplicationIdentity, download: UInt64, upload: UInt64, peak: UInt64, processes: [String: ProcessTrafficSummary])] = [:]
+
+        for record in records {
+            let sample = record.sample
             var bucket = grouped[sample.application.id] ?? (
                 identity: sample.application,
                 download: 0,
@@ -278,21 +289,38 @@ public final class TrafficAnalyticsEngine {
             bucket.upload += sample.delta.upload
             bucket.peak = max(bucket.peak, sample.peakBytesPerSecond)
 
-            var process = bucket.processes[sample.processID] ?? ProcessTrafficSummary(
-                processID: sample.processID,
-                processName: sample.application.displayName,
-                download: 0,
-                upload: 0,
-                peakBytesPerSecond: 0
-            )
-            process = ProcessTrafficSummary(
-                processID: process.processID,
-                processName: process.processName,
-                download: process.download + sample.delta.download,
-                upload: process.upload + sample.delta.upload,
-                peakBytesPerSecond: max(process.peakBytesPerSecond, sample.peakBytesPerSecond)
-            )
-            bucket.processes[sample.processID] = process
+            let processSummaries = record.processSummaries ?? [
+                StoredProcessTrafficSummary(
+                    processDiscriminator: sample.processDiscriminator,
+                    processID: sample.processID,
+                    processName: sample.processName,
+                    download: sample.delta.download,
+                    upload: sample.delta.upload,
+                    peakBytesPerSecond: sample.peakBytesPerSecond,
+                    sampleCount: record.sampleCount
+                )
+            ]
+            for summary in processSummaries {
+                let processKey = summary.processDiscriminator.isEmpty
+                    ? "legacy-pid:\(summary.processID)"
+                    : summary.processDiscriminator
+                let process = bucket.processes[processKey] ?? ProcessTrafficSummary(
+                    processDiscriminator: summary.processDiscriminator.isEmpty ? nil : summary.processDiscriminator,
+                    processID: summary.processID,
+                    processName: summary.processName,
+                    download: 0,
+                    upload: 0,
+                    peakBytesPerSecond: 0
+                )
+                bucket.processes[processKey] = ProcessTrafficSummary(
+                    processDiscriminator: process.processDiscriminator,
+                    processID: process.processID,
+                    processName: process.processName,
+                    download: process.download + summary.download,
+                    upload: process.upload + summary.upload,
+                    peakBytesPerSecond: max(process.peakBytesPerSecond, summary.peakBytesPerSecond)
+                )
+            }
             grouped[sample.application.id] = bucket
         }
 
@@ -302,7 +330,12 @@ public final class TrafficAnalyticsEngine {
                 download: $0.download,
                 upload: $0.upload,
                 peakBytesPerSecond: $0.peak,
-                processes: $0.processes.values.sorted { $0.processID < $1.processID }
+                processes: $0.processes.values.sorted {
+                    if $0.processID == $1.processID {
+                        return ($0.processDiscriminator ?? "") < ($1.processDiscriminator ?? "")
+                    }
+                    return $0.processID < $1.processID
+                }
             )
         }
         .filter { ApplicationIdentityResolver.matches($0, search: search) }
@@ -346,26 +379,47 @@ public final class TrafficAnalyticsEngine {
     }
 
     public func deduplicate(_ samples: [TrafficSample]) -> [TrafficSample] {
+        self.deduplicate(
+            samples,
+            sample: { $0 }
+        )
+    }
+
+    public func deduplicate(_ records: [StoredTrafficRecord]) -> [StoredTrafficRecord] {
+        self.deduplicate(
+            records,
+            sample: { $0.sample }
+        )
+    }
+
+    private func deduplicate<Value>(
+        _ values: [Value],
+        sample: (Value) -> TrafficSample
+    ) -> [Value] {
         // Prefer physical interfaces when the same application reports traffic on both
         // tunnel and physical layers in the same second.
-        var bySecondApp: [String: [TrafficSample]] = [:]
-        for sample in samples {
-            let second = Int64(sample.timestamp.timeIntervalSince1970)
-            let key = "\(second)|\(sample.application.id)"
-            bySecondApp[key, default: []].append(sample)
+        var bySecondApp: [String: [Value]] = [:]
+        for value in values {
+            let traffic = sample(value)
+            let second = Int64(traffic.timestamp.timeIntervalSince1970)
+            let key = "\(second)|\(traffic.application.id)"
+            bySecondApp[key, default: []].append(value)
         }
 
-        var result: [TrafficSample] = []
+        var result: [Value] = []
         for group in bySecondApp.values {
-            let hasTunnel = group.contains { $0.network.kind == .tunnel }
-            let hasPhysical = group.contains { $0.network.kind == .wifi || $0.network.kind == .ethernet || $0.network.kind == .hotspot }
+            let hasTunnel = group.contains { sample($0).network.kind == .tunnel }
+            let hasPhysical = group.contains {
+                let kind = sample($0).network.kind
+                return kind == .wifi || kind == .ethernet || kind == .hotspot
+            }
             if hasTunnel && hasPhysical {
-                result.append(contentsOf: group.filter { $0.network.kind != .tunnel })
+                result.append(contentsOf: group.filter { sample($0).network.kind != .tunnel })
             } else {
                 result.append(contentsOf: group)
             }
         }
-        return result.sorted { $0.timestamp < $1.timestamp }
+        return result.sorted { sample($0).timestamp < sample($1).timestamp }
     }
 
     private func storageLevel(for range: TrafficRange) -> TrafficAggregationLevel {

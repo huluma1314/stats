@@ -10,16 +10,101 @@ public enum TrafficAggregationLevel: String, Codable, CaseIterable {
     case second
     case minute
     case hour
+    case day
     case month
     case year
 }
 
+public enum TrafficHistorySchema: String, Codable {
+    case v1
+    case v2
+}
+
+public struct StoredProcessTrafficSummary: Codable, Equatable {
+    public let processDiscriminator: String
+    public let processID: Int32
+    public let processName: String
+    public let download: UInt64
+    public let upload: UInt64
+    public let peakBytesPerSecond: UInt64
+    public let sampleCount: Int?
+
+    public init(
+        processDiscriminator: String,
+        processID: Int32,
+        processName: String,
+        download: UInt64,
+        upload: UInt64,
+        peakBytesPerSecond: UInt64,
+        sampleCount: Int?
+    ) {
+        self.processDiscriminator = processDiscriminator
+        self.processID = processID
+        self.processName = processName
+        self.download = download
+        self.upload = upload
+        self.peakBytesPerSecond = peakBytesPerSecond
+        self.sampleCount = sampleCount
+    }
+}
+
+public struct StoredTrafficRecord: Codable, Equatable {
+    public let schema: TrafficHistorySchema
+    public let level: TrafficAggregationLevel
+    public let sample: TrafficSample
+    public let sampleCount: Int?
+    public let processSummaries: [StoredProcessTrafficSummary]?
+
+    public init(
+        schema: TrafficHistorySchema,
+        level: TrafficAggregationLevel,
+        sample: TrafficSample,
+        sampleCount: Int?,
+        processSummaries: [StoredProcessTrafficSummary]? = nil
+    ) {
+        self.schema = schema
+        self.level = level
+        self.sample = sample
+        self.sampleCount = sampleCount
+        self.processSummaries = processSummaries
+    }
+}
+
+public struct CommittedTrafficBatch: Equatable {
+    public let samples: [TrafficSample]
+
+    public init(samples: [TrafficSample]) {
+        self.samples = samples
+    }
+}
+
+public enum TrafficPersistenceError: Error, Equatable, CustomStringConvertible {
+    case encodingFailed
+    case storeFailed(String)
+
+    public var description: String {
+        switch self {
+        case .encodingFailed: return "Unable to encode traffic history"
+        case .storeFailed(let message): return message
+        }
+    }
+}
+
 public protocol TrafficKeyValueStoring: AnyObject {
-    func put(key: String, value: String)
+    func writeAtomically(puts: [(key: String, value: String)], deletes: [String]) throws
     func get(key: String) -> String?
     func values(prefix: String) -> [String]
     func keys(prefix: String) -> [String]
-    func delete(keys: [String])
+}
+
+public extension TrafficKeyValueStoring {
+    func put(key: String, value: String) throws {
+        try self.writeAtomically(puts: [(key, value)], deletes: [])
+    }
+
+    func delete(keys: [String]) throws {
+        try self.writeAtomically(puts: [], deletes: keys)
+    }
 }
 
 public final class InMemoryTrafficStore: TrafficKeyValueStoring {
@@ -28,10 +113,13 @@ public final class InMemoryTrafficStore: TrafficKeyValueStoring {
 
     public init() {}
 
-    public func put(key: String, value: String) {
+    public func writeAtomically(puts: [(key: String, value: String)], deletes: [String]) throws {
         self.lock.lock()
-        self.storage[key] = value
-        self.lock.unlock()
+        defer { self.lock.unlock() }
+        var next = self.storage
+        puts.forEach { next[$0.key] = $0.value }
+        deletes.forEach { next.removeValue(forKey: $0) }
+        self.storage = next
     }
 
     public func get(key: String) -> String? {
@@ -56,12 +144,6 @@ public final class InMemoryTrafficStore: TrafficKeyValueStoring {
             .filter { $0.hasPrefix(prefix) }
             .sorted()
     }
-
-    public func delete(keys: [String]) {
-        self.lock.lock()
-        keys.forEach { self.storage.removeValue(forKey: $0) }
-        self.lock.unlock()
-    }
 }
 
 public final class LevelDBTrafficStore: TrafficKeyValueStoring {
@@ -71,8 +153,8 @@ public final class LevelDBTrafficStore: TrafficKeyValueStoring {
         self.db = db
     }
 
-    public func put(key: String, value: String) {
-        self.db.putRaw(key: key, value: value)
+    public func writeAtomically(puts: [(key: String, value: String)], deletes: [String]) throws {
+        try self.db.writeRawAtomically(puts: puts, deletes: deletes)
     }
 
     public func get(key: String) -> String? {
@@ -85,10 +167,6 @@ public final class LevelDBTrafficStore: TrafficKeyValueStoring {
 
     public func keys(prefix: String) -> [String] {
         self.db.keys(prefix: prefix)
-    }
-
-    public func delete(keys: [String]) {
-        self.db.delete(keys: keys)
     }
 }
 
@@ -115,102 +193,177 @@ public struct TrafficHistoryQuery: Equatable {
 }
 
 public final class TrafficHistoryRepository {
-    public static let schemaVersion = "v1"
+    public static let schemaVersion = "v2"
     public static let keyPrefix = "net.analytics.\(schemaVersion)"
+    public static let legacyKeyPrefix = "net.analytics.v1"
+    private static let trafficKeyPrefix = "\(keyPrefix)|"
+    private static let legacyTrafficKeyPrefix = "\(legacyKeyPrefix)|"
 
     private let store: TrafficKeyValueStoring
     private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<UInt8>()
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let alertStore: TrafficAlertStore
+    private let ruleStore: TrafficRuleStore
 
     public init(
         store: TrafficKeyValueStoring,
-        queue: DispatchQueue = DispatchQueue(label: "eu.exelban.Stats.Net.analytics.history")
+        queue: DispatchQueue = DispatchQueue(label: "eu.exelban.Stats.Net.analytics.history"),
+        alertStore: TrafficAlertStore = TrafficAlertStore(),
+        ruleStore: TrafficRuleStore = TrafficRuleStore()
     ) {
         self.store = store
         self.queue = queue
+        self.alertStore = alertStore
+        self.ruleStore = ruleStore
+        self.queue.setSpecific(key: self.queueKey, value: 1)
         self.encoder.dateEncodingStrategy = .iso8601
         self.decoder.dateDecodingStrategy = .iso8601
     }
 
-    public func insert(_ sample: TrafficSample, level: TrafficAggregationLevel = .second) {
+    @discardableResult
+    public func ingest(_ samples: [TrafficSample], level: TrafficAggregationLevel = .second) -> Result<CommittedTrafficBatch, TrafficPersistenceError> {
         self.queue.sync {
-            let key = Self.makeKey(
-                level: level,
-                timestamp: sample.timestamp,
-                networkID: sample.network.id,
-                applicationID: sample.application.id
-            )
-            guard let data = try? self.encoder.encode(sample),
-                  let value = String(data: data, encoding: .utf8) else {
-                return
+            do {
+                var recordsByKey: [String: StoredTrafficRecord] = [:]
+                for sample in samples {
+                    let key = Self.makeKey(
+                        level: level,
+                        timestamp: sample.timestamp,
+                        networkID: sample.network.id,
+                        applicationID: sample.application.id,
+                        processDiscriminator: level == .second ? sample.processDiscriminator : nil
+                    )
+                    let record = StoredTrafficRecord(
+                        schema: .v2,
+                        level: level,
+                        sample: sample,
+                        sampleCount: level == .second ? 1 : nil
+                    )
+                    recordsByKey[key] = recordsByKey[key].map {
+                        TrafficAggregation.merge($0, record, level: level)
+                    } ?? record
+                }
+
+                let puts = try recordsByKey.keys.sorted().map { key in
+                    let contribution = recordsByKey[key]!
+                    let record = self.decodeRecord(key: key, schema: .v2, level: level).map {
+                        TrafficAggregation.merge($0, contribution, level: level)
+                    } ?? contribution
+                    return (key, try self.encode(record))
+                }
+                try self.writeAtomically(puts: puts, deletes: [])
+                return .success(CommittedTrafficBatch(samples: samples))
+            } catch let error as TrafficPersistenceError {
+                return .failure(error)
+            } catch {
+                return .failure(.storeFailed(error.localizedDescription))
             }
-            self.store.put(key: key, value: value)
         }
     }
 
+    public func insert(_ sample: TrafficSample, level: TrafficAggregationLevel = .second) {
+        _ = self.ingest([sample], level: level)
+    }
+
     public func insert(samples: [TrafficSample], level: TrafficAggregationLevel = .second) {
-        samples.forEach { self.insert($0, level: level) }
+        _ = self.ingest(samples, level: level)
     }
 
     public func fetch(_ query: TrafficHistoryQuery) -> [TrafficSample] {
-        self.queue.sync {
-            let prefix = "\(Self.keyPrefix)|\(query.level.rawValue)|"
-            let startSeconds = Int64(query.start.timeIntervalSince1970)
-            let endSeconds = Int64(query.end.timeIntervalSince1970)
-            let startBound = "\(prefix)\(String(format: "%020lld", startSeconds))|"
-            let endBound = "\(prefix)\(String(format: "%020lld", endSeconds + 1))|"
-            let keys = self.store.keys(prefix: prefix)
-                .filter { $0 >= startBound && $0 < endBound }
+        self.fetchRecords(query).map(\.sample)
+    }
 
-            return keys.compactMap { key -> TrafficSample? in
-                guard let raw = self.store.get(key: key),
-                      let data = raw.data(using: .utf8),
-                      let sample = try? self.decoder.decode(TrafficSample.self, from: data) else {
-                    return nil
+    public func fetchRecords(_ query: TrafficHistoryQuery) -> [StoredTrafficRecord] {
+        self.queue.sync {
+            self.fetchRecordsLocked(query).sorted { lhs, rhs in
+                if lhs.sample.timestamp == rhs.sample.timestamp {
+                    return lhs.sample.processDiscriminator < rhs.sample.processDiscriminator
                 }
-                if let networkID = query.networkID, sample.network.id != networkID {
-                    return nil
-                }
-                if let applicationID = query.applicationID, sample.application.id != applicationID {
-                    return nil
-                }
-                if sample.timestamp < query.start || sample.timestamp > query.end {
-                    return nil
-                }
-                return sample
-            }.sorted { $0.timestamp < $1.timestamp }
+                return lhs.sample.timestamp < rhs.sample.timestamp
+            }
+        }
+    }
+
+    public func deleteTrafficHistory() throws {
+        try self.queue.sync {
+            let keys = self.store.keys(prefix: Self.legacyTrafficKeyPrefix)
+                + self.store.keys(prefix: Self.trafficKeyPrefix)
+            try self.writeAtomically(puts: [], deletes: Array(Set(keys)))
+        }
+    }
+
+    public func clearAnalyticsData() throws {
+        try self.queue.sync {
+            let keys = self.store.keys(prefix: Self.legacyTrafficKeyPrefix)
+                + self.store.keys(prefix: Self.trafficKeyPrefix)
+            try self.writeAtomically(puts: [], deletes: Array(Set(keys)))
+            self.alertStore.clear()
+            self.ruleStore.clearRuntimeState()
         }
     }
 
     public func deleteAll() {
-        self.queue.sync {
-            let keys = self.store.keys(prefix: Self.keyPrefix)
-            self.store.delete(keys: keys)
-        }
+        try? self.deleteTrafficHistory()
     }
 
     public func delete(keys: [String]) {
         self.queue.sync {
-            self.store.delete(keys: keys)
+            var expanded: [String] = []
+            for key in keys {
+                if key.hasPrefix("\(Self.keyPrefix)|second|") && key.split(separator: "|", omittingEmptySubsequences: false).count == 5 {
+                    expanded.append(contentsOf: self.store.keys(prefix: "\(key)|"))
+                } else {
+                    expanded.append(key)
+                }
+            }
+            try? self.writeAtomically(puts: [], deletes: Array(Set(expanded)))
         }
     }
 
     public func replace(level: TrafficAggregationLevel, samples: [TrafficSample]) {
-        self.queue.sync {
-            for sample in samples {
-                let key = Self.makeKey(
-                    level: level,
-                    timestamp: sample.timestamp,
-                    networkID: sample.network.id,
-                    applicationID: sample.application.id
-                )
-                guard let data = try? self.encoder.encode(sample),
-                      let value = String(data: data, encoding: .utf8) else {
-                    continue
-                }
-                self.store.put(key: key, value: value)
-            }
+        _ = self.ingest(samples, level: level)
+    }
+
+    public func replaceAtomically(
+        level: TrafficAggregationLevel,
+        samples: [TrafficSample],
+        deleting sourceKeys: [String]
+    ) throws {
+        try self.queue.sync {
+            try self.replaceAtomicallyLocked(
+                records: samples.map {
+                    StoredTrafficRecord(schema: .v2, level: level, sample: $0, sampleCount: level == .second ? 1 : nil)
+                },
+                deleting: sourceKeys
+            )
+        }
+    }
+
+    public func replaceAtomically(
+        level: TrafficAggregationLevel,
+        samples: [TrafficSample],
+        deleting sourceQuery: TrafficHistoryQuery
+    ) throws {
+        try self.queue.sync {
+            let sourceKeys = self.keysLocked(for: sourceQuery)
+            try self.replaceAtomicallyLocked(
+                records: samples.map {
+                    StoredTrafficRecord(schema: .v2, level: level, sample: $0, sampleCount: level == .second ? 1 : nil)
+                },
+                deleting: sourceKeys
+            )
+        }
+    }
+
+    public func replaceAtomically(
+        records: [StoredTrafficRecord],
+        deleting sourceQuery: TrafficHistoryQuery
+    ) throws {
+        try self.queue.sync {
+            let sourceKeys = self.keysLocked(for: sourceQuery)
+            try self.replaceAtomicallyLocked(records: records, deleting: sourceKeys)
         }
     }
 
@@ -218,10 +371,119 @@ public final class TrafficHistoryRepository {
         level: TrafficAggregationLevel,
         timestamp: Date,
         networkID: String,
-        applicationID: String
+        applicationID: String,
+        processDiscriminator: String? = nil
     ) -> String {
         let seconds = Int64(timestamp.timeIntervalSince1970)
         let padded = String(format: "%020lld", seconds)
-        return "\(keyPrefix)|\(level.rawValue)|\(padded)|\(networkID)|\(applicationID)"
+        var components = [
+            keyPrefix,
+            level.rawValue,
+            padded,
+            self.escape(networkID),
+            self.escape(applicationID)
+        ]
+        if level == .second, let processDiscriminator {
+            components.append(self.escape(processDiscriminator))
+        }
+        return components.joined(separator: "|")
+    }
+
+    public static func escape(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "%", with: "%25")
+            .replacingOccurrences(of: "|", with: "%7C")
+            .replacingOccurrences(of: "\n", with: "%0A")
+    }
+
+    private func fetchRecordsLocked(_ query: TrafficHistoryQuery) -> [StoredTrafficRecord] {
+        dispatchPrecondition(condition: .onQueue(self.queue))
+        return [TrafficHistorySchema.v1, .v2].flatMap { schema in
+            self.keysLocked(for: query, schema: schema)
+                .compactMap { key in self.decodeRecord(key: key, schema: schema, level: query.level) }
+                .filter { record in
+                    let sample = record.sample
+                    if let networkID = query.networkID, sample.network.id != networkID { return false }
+                    if let applicationID = query.applicationID, sample.application.id != applicationID { return false }
+                    return sample.timestamp >= query.start && sample.timestamp <= query.end
+                }
+        }
+    }
+
+    private func keysLocked(for query: TrafficHistoryQuery) -> [String] {
+        dispatchPrecondition(condition: .onQueue(self.queue))
+        return [TrafficHistorySchema.v1, .v2].flatMap { self.keysLocked(for: query, schema: $0) }
+    }
+
+    private func keysLocked(for query: TrafficHistoryQuery, schema: TrafficHistorySchema) -> [String] {
+        dispatchPrecondition(condition: .onQueue(self.queue))
+        let prefix = "net.analytics.\(schema.rawValue)|\(query.level.rawValue)|"
+        let startSeconds = Int64(query.start.timeIntervalSince1970)
+        let endSeconds = Int64(query.end.timeIntervalSince1970)
+        let startBound = "\(prefix)\(String(format: "%020lld", startSeconds))|"
+        let endBound = "\(prefix)\(String(format: "%020lld", endSeconds + 1))|"
+        return self.store.keys(prefix: prefix).filter { $0 >= startBound && $0 < endBound }
+    }
+
+    private func replaceAtomicallyLocked(
+        records: [StoredTrafficRecord],
+        deleting sourceKeys: [String]
+    ) throws {
+        dispatchPrecondition(condition: .onQueue(self.queue))
+        let sourceKeySet = Set(sourceKeys)
+        let puts = try records.map { record in
+            let sample = record.sample
+            let key = Self.makeKey(
+                level: record.level,
+                timestamp: sample.timestamp,
+                networkID: sample.network.id,
+                applicationID: sample.application.id,
+                processDiscriminator: record.level == .second ? sample.processDiscriminator : nil
+            )
+            let destinationRecord = sourceKeySet.contains(key)
+                ? nil
+                : self.decodeRecord(key: key, schema: .v2, level: record.level)
+            let mergedRecord = destinationRecord.map {
+                TrafficAggregation.merge($0, record, level: record.level)
+            } ?? record
+            return (key, try self.encode(mergedRecord))
+        }
+        try self.writeAtomically(puts: puts, deletes: sourceKeys)
+    }
+
+    private func decodeRecord(
+        key: String,
+        schema: TrafficHistorySchema,
+        level: TrafficAggregationLevel
+    ) -> StoredTrafficRecord? {
+        dispatchPrecondition(condition: .onQueue(self.queue))
+        guard let raw = self.store.get(key: key), let data = raw.data(using: .utf8) else { return nil }
+        if schema == .v2, let record = try? self.decoder.decode(StoredTrafficRecord.self, from: data) {
+            return record
+        }
+        guard let sample = try? self.decoder.decode(TrafficSample.self, from: data) else { return nil }
+        return StoredTrafficRecord(
+            schema: .v1,
+            level: level,
+            sample: sample,
+            sampleCount: level == .second ? 1 : nil
+        )
+    }
+
+    private func encode<T: Encodable>(_ value: T) throws -> String {
+        dispatchPrecondition(condition: .onQueue(self.queue))
+        guard let string = String(data: try self.encoder.encode(value), encoding: .utf8) else {
+            throw TrafficPersistenceError.encodingFailed
+        }
+        return string
+    }
+
+    private func writeAtomically(puts: [(key: String, value: String)], deletes: [String]) throws {
+        dispatchPrecondition(condition: .onQueue(self.queue))
+        do {
+            try self.store.writeAtomically(puts: puts, deletes: deletes)
+        } catch {
+            throw TrafficPersistenceError.storeFailed(error.localizedDescription)
+        }
     }
 }

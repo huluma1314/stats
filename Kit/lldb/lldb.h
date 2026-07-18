@@ -24,6 +24,7 @@
 
 -(bool)deleteOne:(NSString *)key;
 -(bool)deleteMany:(NSArray*)keys;
+-(bool)writeBatch:(NSDictionary*)puts deletes:(NSArray*)keys;
 
 -(void)close;
 

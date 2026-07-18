@@ -28,6 +28,9 @@ public struct ProcessTrafficCounter: Codable, Equatable {
     public let identity: ApplicationIdentity
     public let processID: Int32
     public let processStartToken: UInt64
+    public let processDiscriminator: String
+    public let interfaceName: String?
+    public let isDelta: Bool
     public let download: UInt64
     public let upload: UInt64
 
@@ -35,12 +38,18 @@ public struct ProcessTrafficCounter: Codable, Equatable {
         identity: ApplicationIdentity,
         processID: Int32,
         processStartToken: UInt64,
+        processDiscriminator: String? = nil,
+        interfaceName: String? = nil,
+        isDelta: Bool = false,
         download: UInt64,
         upload: UInt64
     ) {
         self.identity = identity
         self.processID = processID
         self.processStartToken = processStartToken
+        self.processDiscriminator = processDiscriminator ?? "\(identity.id)|\(processID)|\(processStartToken)"
+        self.interfaceName = interfaceName
+        self.isDelta = isDelta
         self.download = download
         self.upload = upload
     }
@@ -86,6 +95,9 @@ public struct TrafficSample: Codable, Equatable {
     public let application: ApplicationIdentity
     public let network: NetworkIdentity
     public let processID: Int32
+    public let processName: String
+    public let processStartToken: UInt64
+    public let processDiscriminator: String
     public let delta: TrafficDelta
     public let peakBytesPerSecond: UInt64
 
@@ -94,6 +106,9 @@ public struct TrafficSample: Codable, Equatable {
         application: ApplicationIdentity,
         network: NetworkIdentity,
         processID: Int32,
+        processName: String? = nil,
+        processStartToken: UInt64 = 0,
+        processDiscriminator: String? = nil,
         delta: TrafficDelta,
         peakBytesPerSecond: UInt64
     ) {
@@ -101,8 +116,37 @@ public struct TrafficSample: Codable, Equatable {
         self.application = application
         self.network = network
         self.processID = processID
+        self.processName = processName ?? application.displayName
+        self.processStartToken = processStartToken
+        self.processDiscriminator = processDiscriminator ?? "\(application.id)|\(processID)|\(processStartToken)"
         self.delta = delta
         self.peakBytesPerSecond = peakBytesPerSecond
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case timestamp
+        case application
+        case network
+        case processID
+        case processName
+        case processStartToken
+        case processDiscriminator
+        case delta
+        case peakBytesPerSecond
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.timestamp = try container.decode(Date.self, forKey: .timestamp)
+        self.application = try container.decode(ApplicationIdentity.self, forKey: .application)
+        self.network = try container.decode(NetworkIdentity.self, forKey: .network)
+        self.processID = try container.decode(Int32.self, forKey: .processID)
+        self.processName = try container.decodeIfPresent(String.self, forKey: .processName) ?? self.application.displayName
+        self.processStartToken = try container.decodeIfPresent(UInt64.self, forKey: .processStartToken) ?? 0
+        self.processDiscriminator = try container.decodeIfPresent(String.self, forKey: .processDiscriminator)
+            ?? "\(self.application.id)|\(self.processID)|\(self.processStartToken)"
+        self.delta = try container.decode(TrafficDelta.self, forKey: .delta)
+        self.peakBytesPerSecond = try container.decode(UInt64.self, forKey: .peakBytesPerSecond)
     }
 }
 
@@ -132,6 +176,7 @@ public struct TrafficBucket: Codable, Equatable {
 }
 
 public struct ProcessTrafficSummary: Codable, Equatable {
+    public let processDiscriminator: String?
     public let processID: Int32
     public let processName: String
     public let download: UInt64
@@ -139,12 +184,14 @@ public struct ProcessTrafficSummary: Codable, Equatable {
     public let peakBytesPerSecond: UInt64
 
     public init(
+        processDiscriminator: String? = nil,
         processID: Int32,
         processName: String,
         download: UInt64,
         upload: UInt64,
         peakBytesPerSecond: UInt64
     ) {
+        self.processDiscriminator = processDiscriminator
         self.processID = processID
         self.processName = processName
         self.download = download

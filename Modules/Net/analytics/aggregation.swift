@@ -149,73 +149,48 @@ public enum TrafficAggregation {
         now: Date = Date(),
         policy: TrafficRetentionPolicy = .standard,
         calendar: Calendar = .current
-    ) {
+    ) throws {
         let secondCutoff = now.addingTimeInterval(-policy.secondRetention)
         let minuteCutoff = now.addingTimeInterval(-policy.minuteRetention)
         let hourCutoff = now.addingTimeInterval(-policy.hourRetention)
 
-        let oldSeconds = repository.fetch(
-            TrafficHistoryQuery(
-                level: .second,
-                start: Date(timeIntervalSince1970: 0),
-                end: secondCutoff
-            )
+        let secondQuery = TrafficHistoryQuery(
+            level: .second,
+            start: Date(timeIntervalSince1970: 0),
+            end: secondCutoff
         )
+        let oldSeconds = repository.fetchRecords(secondQuery)
         if !oldSeconds.isEmpty {
-            let minuteSamples = self.aggregate(samples: oldSeconds, level: .minute, calendar: calendar)
-            repository.replace(level: .minute, samples: minuteSamples)
-            let keys = oldSeconds.map {
-                TrafficHistoryRepository.makeKey(
-                    level: .second,
-                    timestamp: $0.timestamp,
-                    networkID: $0.network.id,
-                    applicationID: $0.application.id
-                )
-            }
-            repository.delete(keys: keys)
+            try repository.replaceAtomically(
+                records: self.aggregate(records: oldSeconds, level: .minute, calendar: calendar),
+                deleting: secondQuery
+            )
         }
 
-        let oldMinutes = repository.fetch(
-            TrafficHistoryQuery(
-                level: .minute,
-                start: Date(timeIntervalSince1970: 0),
-                end: minuteCutoff
-            )
+        let minuteQuery = TrafficHistoryQuery(
+            level: .minute,
+            start: Date(timeIntervalSince1970: 0),
+            end: minuteCutoff
         )
+        let oldMinutes = repository.fetchRecords(minuteQuery)
         if !oldMinutes.isEmpty {
-            let hourSamples = self.aggregate(samples: oldMinutes, level: .hour, calendar: calendar)
-            repository.replace(level: .hour, samples: hourSamples)
-            let keys = oldMinutes.map {
-                TrafficHistoryRepository.makeKey(
-                    level: .minute,
-                    timestamp: $0.timestamp,
-                    networkID: $0.network.id,
-                    applicationID: $0.application.id
-                )
-            }
-            repository.delete(keys: keys)
+            try repository.replaceAtomically(
+                records: self.aggregate(records: oldMinutes, level: .hour, calendar: calendar),
+                deleting: minuteQuery
+            )
         }
 
-        let oldHours = repository.fetch(
-            TrafficHistoryQuery(
-                level: .hour,
-                start: Date(timeIntervalSince1970: 0),
-                end: hourCutoff
-            )
+        let hourQuery = TrafficHistoryQuery(
+            level: .hour,
+            start: Date(timeIntervalSince1970: 0),
+            end: hourCutoff
         )
+        let oldHours = repository.fetchRecords(hourQuery)
         if !oldHours.isEmpty {
-            let monthSamples = self.aggregate(samples: oldHours, level: .month, calendar: calendar)
-            repository.replace(level: .month, samples: monthSamples)
-            // Permanent monthly summaries keep source hours only after the hour cutoff.
-            let keys = oldHours.map {
-                TrafficHistoryRepository.makeKey(
-                    level: .hour,
-                    timestamp: $0.timestamp,
-                    networkID: $0.network.id,
-                    applicationID: $0.application.id
-                )
-            }
-            repository.delete(keys: keys)
+            try repository.replaceAtomically(
+                records: self.aggregate(records: oldHours, level: .month, calendar: calendar),
+                deleting: hourQuery
+            )
         }
     }
 
@@ -235,6 +210,8 @@ public enum TrafficAggregation {
                 bucketStart = Date(timeIntervalSince1970: TimeInterval(seconds - (seconds % 60)))
             case .hour:
                 bucketStart = calendar.dateInterval(of: .hour, for: sample.timestamp)?.start ?? sample.timestamp
+            case .day:
+                bucketStart = calendar.startOfDay(for: sample.timestamp)
             case .month:
                 let comps = calendar.dateComponents([.year, .month], from: sample.timestamp)
                 bucketStart = calendar.date(from: comps) ?? sample.timestamp
@@ -250,6 +227,7 @@ public enum TrafficAggregation {
                     application: existing.application,
                     network: existing.network,
                     processID: existing.processID,
+                    processName: existing.processName,
                     delta: TrafficDelta(
                         download: existing.delta.download + sample.delta.download,
                         upload: existing.delta.upload + sample.delta.upload
@@ -263,11 +241,155 @@ public enum TrafficAggregation {
                     application: sample.application,
                     network: sample.network,
                     processID: sample.processID,
+                    processName: sample.processName,
                     delta: sample.delta,
                     peakBytesPerSecond: sample.peakBytesPerSecond
                 )
             }
         }
         return grouped.values.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    public static func aggregate(
+        records: [StoredTrafficRecord],
+        level: TrafficAggregationLevel,
+        calendar: Calendar
+    ) -> [StoredTrafficRecord] {
+        struct Group {
+            var sample: TrafficSample
+            var sampleCount: Int?
+            var processes: [String: StoredProcessTrafficSummary]
+        }
+
+        var grouped: [String: Group] = [:]
+        for record in records {
+            guard let bucketSample = self.aggregate(samples: [record.sample], level: level, calendar: calendar).first else { continue }
+            let key = "\(bucketSample.timestamp.timeIntervalSince1970)|\(bucketSample.network.id)|\(bucketSample.application.id)"
+            let sourceProcesses = record.processSummaries ?? [
+                StoredProcessTrafficSummary(
+                    processDiscriminator: record.sample.processDiscriminator,
+                    processID: record.sample.processID,
+                    processName: record.sample.processName,
+                    download: record.sample.delta.download,
+                    upload: record.sample.delta.upload,
+                    peakBytesPerSecond: record.sample.peakBytesPerSecond,
+                    sampleCount: record.sampleCount
+                )
+            ]
+
+            if var group = grouped[key] {
+                group.sample = TrafficSample(
+                    timestamp: bucketSample.timestamp,
+                    application: group.sample.application,
+                    network: group.sample.network,
+                    processID: group.sample.processID,
+                    processName: group.sample.processName,
+                    processStartToken: group.sample.processStartToken,
+                    processDiscriminator: group.sample.processDiscriminator,
+                    delta: TrafficDelta(
+                        download: group.sample.delta.download + record.sample.delta.download,
+                        upload: group.sample.delta.upload + record.sample.delta.upload
+                    ),
+                    peakBytesPerSecond: max(group.sample.peakBytesPerSecond, record.sample.peakBytesPerSecond)
+                )
+                group.sampleCount = self.mergedCount(group.sampleCount, record.sampleCount)
+                for process in sourceProcesses {
+                    if let existing = group.processes[process.processDiscriminator] {
+                        group.processes[process.processDiscriminator] = StoredProcessTrafficSummary(
+                            processDiscriminator: process.processDiscriminator,
+                            processID: process.processID,
+                            processName: process.processName,
+                            download: existing.download + process.download,
+                            upload: existing.upload + process.upload,
+                            peakBytesPerSecond: max(existing.peakBytesPerSecond, process.peakBytesPerSecond),
+                            sampleCount: self.mergedCount(existing.sampleCount, process.sampleCount)
+                        )
+                    } else {
+                        group.processes[process.processDiscriminator] = process
+                    }
+                }
+                grouped[key] = group
+            } else {
+                grouped[key] = Group(
+                    sample: bucketSample,
+                    sampleCount: record.sampleCount,
+                    processes: Dictionary(uniqueKeysWithValues: sourceProcesses.map { ($0.processDiscriminator, $0) })
+                )
+            }
+        }
+
+        return grouped.values.map { group in
+            StoredTrafficRecord(
+                schema: .v2,
+                level: level,
+                sample: group.sample,
+                sampleCount: group.sampleCount,
+                processSummaries: group.processes.values.sorted { $0.processDiscriminator < $1.processDiscriminator }
+            )
+        }.sorted { $0.sample.timestamp < $1.sample.timestamp }
+    }
+
+    static func merge(
+        _ existing: StoredTrafficRecord,
+        _ contribution: StoredTrafficRecord,
+        level: TrafficAggregationLevel
+    ) -> StoredTrafficRecord {
+        let sample = TrafficSample(
+            timestamp: contribution.sample.timestamp,
+            application: existing.sample.application,
+            network: existing.sample.network,
+            processID: existing.sample.processID,
+            processName: existing.sample.processName,
+            processStartToken: existing.sample.processStartToken,
+            processDiscriminator: existing.sample.processDiscriminator,
+            delta: TrafficDelta(
+                download: existing.sample.delta.download + contribution.sample.delta.download,
+                upload: existing.sample.delta.upload + contribution.sample.delta.upload
+            ),
+            peakBytesPerSecond: max(existing.sample.peakBytesPerSecond, contribution.sample.peakBytesPerSecond)
+        )
+        var processes: [String: StoredProcessTrafficSummary] = [:]
+        for process in self.processSummaries(for: existing) + self.processSummaries(for: contribution) {
+            if let current = processes[process.processDiscriminator] {
+                processes[process.processDiscriminator] = StoredProcessTrafficSummary(
+                    processDiscriminator: current.processDiscriminator,
+                    processID: current.processID,
+                    processName: current.processName,
+                    download: current.download + process.download,
+                    upload: current.upload + process.upload,
+                    peakBytesPerSecond: max(current.peakBytesPerSecond, process.peakBytesPerSecond),
+                    sampleCount: self.mergedCount(current.sampleCount, process.sampleCount)
+                )
+            } else {
+                processes[process.processDiscriminator] = process
+            }
+        }
+
+        return StoredTrafficRecord(
+            schema: .v2,
+            level: level,
+            sample: sample,
+            sampleCount: self.mergedCount(existing.sampleCount, contribution.sampleCount),
+            processSummaries: processes.values.sorted { $0.processDiscriminator < $1.processDiscriminator }
+        )
+    }
+
+    private static func processSummaries(for record: StoredTrafficRecord) -> [StoredProcessTrafficSummary] {
+        record.processSummaries ?? [
+            StoredProcessTrafficSummary(
+                processDiscriminator: record.sample.processDiscriminator,
+                processID: record.sample.processID,
+                processName: record.sample.processName,
+                download: record.sample.delta.download,
+                upload: record.sample.delta.upload,
+                peakBytesPerSecond: record.sample.peakBytesPerSecond,
+                sampleCount: record.sampleCount
+            )
+        ]
+    }
+
+    private static func mergedCount(_ lhs: Int?, _ rhs: Int?) -> Int? {
+        guard let lhs, let rhs else { return nil }
+        return lhs + rhs
     }
 }

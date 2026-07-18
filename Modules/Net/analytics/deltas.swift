@@ -12,15 +12,13 @@ public enum TrafficDeltaCalculator {
     ) -> TrafficDelta {
         guard let previous,
               previous.processID == current.processID,
-              previous.processStartToken == current.processStartToken,
-              current.download >= previous.download,
-              current.upload >= previous.upload else {
+              previous.processStartToken == current.processStartToken else {
             return .zero
         }
 
         return TrafficDelta(
-            download: current.download - previous.download,
-            upload: current.upload - previous.upload
+            download: current.download >= previous.download ? current.download - previous.download : 0,
+            upload: current.upload >= previous.upload ? current.upload - previous.upload : 0
         )
     }
 }

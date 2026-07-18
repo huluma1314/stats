@@ -62,7 +62,7 @@ internal class Preview: PreviewWrapper {
     private var overviewView: TrafficOverviewView? = nil
     private var liveTrafficView: LiveTrafficView? = nil
     private var outerWidthConstraint: NSLayoutConstraint? = nil
-    private let analyticsRepository = TrafficHistoryRepository(store: LevelDBTrafficStore())
+    private let analyticsRepository: TrafficHistoryRepository
     private lazy var analyticsEngine = TrafficAnalyticsEngine(repository: self.analyticsRepository)
     private let ruleStore = TrafficRuleStore()
     private var currentPage: NetworkPreviewPage = NetworkPreviewPage(
@@ -93,7 +93,11 @@ internal class Preview: PreviewWrapper {
         networkSpeedUnit(from: Store.shared.string(key: "\(self.module.stringValue)_speedUnit", defaultValue: NetworkSpeedUnitAuto)).key
     }
     
-    public init(_ module: ModuleType) {
+    public init(
+        _ module: ModuleType,
+        analyticsRepository: TrafficHistoryRepository = TrafficHistoryRepository(store: LevelDBTrafficStore())
+    ) {
+        self.analyticsRepository = analyticsRepository
         super.init(type: module)
 
         // PreviewWrapper defaults to gravity-area sizing. That works for the
