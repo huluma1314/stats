@@ -13,6 +13,8 @@ import Cocoa
 import Kit
 
 internal class Preview: PreviewWrapper {
+    override var isFlipped: Bool { true }
+
     private var chart: NetworkChartView? = nil
     private var grid: GridChartView? = nil
     
@@ -54,8 +56,11 @@ internal class Preview: PreviewWrapper {
     private var realtimeContainer: NSStackView? = nil
     private var analysisContainer: NSView? = nil
     private var overviewContainer: NSView? = nil
+    private var pageHost: NSStackView? = nil
+    private var pageWidthConstraint: NSLayoutConstraint? = nil
     private var analysisView: TrafficAnalysisView? = nil
     private var overviewView: TrafficOverviewView? = nil
+    private var outerWidthConstraint: NSLayoutConstraint? = nil
     private let analyticsRepository = TrafficHistoryRepository(store: LevelDBTrafficStore())
     private lazy var analyticsEngine = TrafficAnalyticsEngine(repository: self.analyticsRepository)
     private let ruleStore = TrafficRuleStore()
@@ -89,12 +94,20 @@ internal class Preview: PreviewWrapper {
     
     public init(_ module: ModuleType) {
         super.init(type: module)
+
+        // PreviewWrapper defaults to gravity-area sizing. That works for the
+        // compact legacy preview, but lets the analytics pages keep only their
+        // intrinsic width when embedded in the settings scroll view.
+        self.alignment = .width
+        self.distribution = .fill
         
         self.loadColors()
-        self.addArrangedSubview(self.pageSelector())
+        let selector = self.pageSelector()
+        self.addArrangedSubview(selector)
 
         let realtime = NSStackView()
         realtime.orientation = .vertical
+        realtime.alignment = .width
         realtime.spacing = self.spacing
         realtime.translatesAutoresizingMaskIntoConstraints = false
         self.realtimeContainer = realtime
@@ -115,31 +128,57 @@ internal class Preview: PreviewWrapper {
 
         let analysisHost = NSStackView()
         analysisHost.orientation = .vertical
+        analysisHost.alignment = .width
+        analysisHost.distribution = .fill
         analysisHost.translatesAutoresizingMaskIntoConstraints = false
-        analysisHost.isHidden = true
         let analysis = TrafficAnalysisView(engine: self.analyticsEngine, repository: self.analyticsRepository)
         self.analysisView = analysis
         analysisHost.addArrangedSubview(analysis)
+        analysis.widthAnchor.constraint(equalTo: analysisHost.widthAnchor).isActive = true
 
         let overviewHost = NSStackView()
         overviewHost.orientation = .vertical
+        overviewHost.alignment = .width
+        overviewHost.distribution = .fill
         overviewHost.translatesAutoresizingMaskIntoConstraints = false
-        overviewHost.isHidden = true
         let overview = TrafficOverviewView(engine: self.analyticsEngine, planStore: self.ruleStore)
         self.overviewView = overview
         overviewHost.addArrangedSubview(overview)
+        overview.widthAnchor.constraint(equalTo: overviewHost.widthAnchor).isActive = true
 
         self.analysisContainer = analysisHost
         self.overviewContainer = overviewHost
 
-        self.addArrangedSubview(realtime)
-        self.addArrangedSubview(analysisHost)
-        self.addArrangedSubview(overviewHost)
+        let pageHost = FlippedStackView()
+        pageHost.orientation = .vertical
+        pageHost.alignment = .width
+        pageHost.distribution = .fill
+        pageHost.translatesAutoresizingMaskIntoConstraints = false
+        self.pageHost = pageHost
+        self.addArrangedSubview(pageHost)
+        self.addSubview(selector, positioned: .above, relativeTo: pageHost)
+        NSLayoutConstraint.activate([
+            selector.widthAnchor.constraint(equalTo: self.widthAnchor),
+            pageHost.widthAnchor.constraint(equalTo: self.widthAnchor)
+        ])
         self.applyPage(self.currentPage)
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+
+        self.outerWidthConstraint?.isActive = false
+        self.outerWidthConstraint = nil
+        guard let stack = self.superview as? NSStackView else { return }
+
+        let horizontalInsets = stack.edgeInsets.left + stack.edgeInsets.right
+        let constraint = self.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -horizontalInsets)
+        constraint.isActive = true
+        self.outerWidthConstraint = constraint
     }
     
     private func loadColors() {
@@ -189,9 +228,24 @@ internal class Preview: PreviewWrapper {
     private func applyPage(_ page: NetworkPreviewPage) {
         self.currentPage = page
         Store.shared.set(key: NetworkPreviewPage.storageKey, value: page.rawValue)
-        self.realtimeContainer?.isHidden = page != .realtime
-        self.analysisContainer?.isHidden = page != .analysis
-        self.overviewContainer?.isHidden = page != .overview
+
+        let target: NSView?
+        switch page {
+        case .realtime: target = self.realtimeContainer
+        case .analysis: target = self.analysisContainer
+        case .overview: target = self.overviewContainer
+        }
+        if let host = self.pageHost, let target {
+            self.pageWidthConstraint?.isActive = false
+            host.arrangedSubviews.forEach {
+                host.removeArrangedSubview($0)
+                $0.removeFromSuperview()
+            }
+            host.addArrangedSubview(target)
+            let width = target.widthAnchor.constraint(equalTo: host.widthAnchor)
+            width.isActive = true
+            self.pageWidthConstraint = width
+        }
         if page == .analysis {
             self.analysisView?.reload()
         }

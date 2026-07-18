@@ -108,6 +108,10 @@ open class Window: NSStackView {
             settingsView.isHidden = true
             self.addArrangedSubview(previewView)
             self.previewView = previewView
+            previewView.widthAnchor.constraint(
+                equalTo: self.widthAnchor,
+                constant: -(Constants.Settings.margin * 2)
+            ).isActive = true
         }
         
         NotificationCenter.default.addObserver(self, selector: #selector(listenForOneView), name: .toggleOneView, object: nil)
@@ -141,6 +145,8 @@ open class Window: NSStackView {
             bottom: Constants.Settings.margin,
             right: Constants.Settings.margin
         )
+        scrollView.stackView.alignment = .width
+        scrollView.stackView.distribution = .fill
         scrollView.stackView.addArrangedSubview(v)
         
         return scrollView

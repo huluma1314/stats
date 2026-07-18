@@ -4,6 +4,7 @@
 //
 
 import XCTest
+import Kit
 @testable import Net
 
 final class NetAnalyticsTests: XCTestCase {
@@ -342,6 +343,133 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(NetworkPreviewPage(storedRawValue: nil), .realtime)
     }
 
+    func testTrafficAnalysisLayoutUsesAvailableWidthAndKeepsControlsVisible() {
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let view = TrafficAnalysisView(
+            engine: TrafficAnalyticsEngine(repository: repository),
+            repository: repository
+        )
+        view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 620)
+        view.layoutSubtreeIfNeeded()
+
+        let descendants = self.descendants(of: view)
+        let rangeControl = descendants
+            .compactMap { $0 as? NSSegmentedControl }
+            .first { $0.segmentCount == TrafficRange.allCases.count }
+        let chart = descendants.compactMap { $0 as? TrafficTimelineChartView }.first
+        let outline = descendants.compactMap { $0 as? NSOutlineView }.first
+
+        XCTAssertNotNil(rangeControl)
+        XCTAssertGreaterThan(rangeControl?.frame.height ?? 0, 20)
+        XCTAssertGreaterThan(chart?.frame.width ?? 0, 1_000)
+        XCTAssertGreaterThan(outline?.enclosingScrollView?.frame.width ?? 0, 1_000)
+    }
+
+    func testNetworkPreviewAnalysisPageStretchesItsContent() {
+        let previousPage = Store.shared.string(
+            key: NetworkPreviewPage.storageKey,
+            defaultValue: NetworkPreviewPage.realtime.rawValue
+        )
+        Store.shared.set(key: NetworkPreviewPage.storageKey, value: NetworkPreviewPage.analysis.rawValue)
+        defer { Store.shared.set(key: NetworkPreviewPage.storageKey, value: previousPage) }
+
+        let preview = Preview(.network)
+        let scrollView = ScrollableStackView(frame: NSRect(x: 0, y: 0, width: 1_200, height: 700))
+        scrollView.stackView.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 10, right: 10)
+        scrollView.stackView.addArrangedSubview(preview)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let descendants = self.descendants(of: preview)
+        let chart = descendants.compactMap { $0 as? TrafficTimelineChartView }.first
+        let rangeControl = descendants
+            .compactMap { $0 as? NSSegmentedControl }
+            .first { $0.segmentCount == TrafficRange.allCases.count }
+        let summaryCards = descendants
+            .compactMap { $0 as? NSStackView }
+            .first { $0.identifier?.rawValue == "traffic-summary-cards" }
+        let analysisView = descendants.compactMap { $0 as? TrafficAnalysisView }.first
+
+        XCTAssertFalse(analysisView?.isFlipped == true)
+        XCTAssertTrue(chart?.superview is FlippedStackView)
+        XCTAssertGreaterThanOrEqual(analysisView?.frame.height ?? 0, 700)
+        if let analysisView, let rangeControl, let chart {
+            let controlsRect = rangeControl.convert(rangeControl.bounds, to: scrollView.stackView)
+            let chartRect = chart.convert(chart.bounds, to: scrollView.stackView)
+            XCTAssertLessThan(controlsRect.minY, chartRect.minY)
+        }
+        XCTAssertGreaterThan(chart?.frame.width ?? 0, 1_000)
+        XCTAssertGreaterThan(summaryCards?.frame.width ?? 0, 1_000)
+        XCTAssertGreaterThan(rangeControl?.frame.height ?? 0, 20)
+    }
+
+    func testSwitchingNetworkPreviewPagesKeepsPageSelectorVisible() {
+        let previousPage = Store.shared.string(
+            key: NetworkPreviewPage.storageKey,
+            defaultValue: NetworkPreviewPage.realtime.rawValue
+        )
+        Store.shared.set(key: NetworkPreviewPage.storageKey, value: NetworkPreviewPage.realtime.rawValue)
+        defer { Store.shared.set(key: NetworkPreviewPage.storageKey, value: previousPage) }
+
+        let preview = Preview(.network)
+        let wrapper = ScrollableStackView(frame: NSRect(x: 0, y: 0, width: 1_200, height: 620))
+        wrapper.stackView.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 10, right: 10)
+        wrapper.stackView.addArrangedSubview(preview)
+        wrapper.layoutSubtreeIfNeeded()
+
+        let descendants = self.descendants(of: wrapper)
+        guard let pageControl = descendants.compactMap({ $0 as? NSSegmentedControl }).first(where: { $0.segmentCount == NetworkPreviewPage.allCases.count }) else {
+            XCTFail("Expected preview page selector")
+            return
+        }
+
+        pageControl.selectedSegment = 1
+        pageControl.sendAction(pageControl.action, to: pageControl.target)
+        wrapper.layoutSubtreeIfNeeded()
+
+        let refreshed = self.descendants(of: preview)
+        let chart = refreshed.compactMap { $0 as? TrafficTimelineChartView }.first
+        var pageView: NSView? = chart
+        while pageView?.superview !== preview {
+            pageView = pageView?.superview
+        }
+        guard let selectorView = pageControl.superview, let pageView,
+              let selectorIndex = preview.subviews.firstIndex(of: selectorView),
+              let pageIndex = preview.subviews.firstIndex(of: pageView) else {
+            XCTFail("Expected selector and active page in preview")
+            return
+        }
+
+        XCTAssertEqual(pageControl.selectedSegment, 1)
+        XCTAssertGreaterThan(pageControl.frame.height, 20)
+        XCTAssertGreaterThan(selectorIndex, pageIndex)
+    }
+
+    func testNetworkPreviewOverviewPageUsesFullWidthCards() {
+        let previousPage = Store.shared.string(
+            key: NetworkPreviewPage.storageKey,
+            defaultValue: NetworkPreviewPage.realtime.rawValue
+        )
+        Store.shared.set(key: NetworkPreviewPage.storageKey, value: NetworkPreviewPage.overview.rawValue)
+        defer { Store.shared.set(key: NetworkPreviewPage.storageKey, value: previousPage) }
+
+        let preview = Preview(.network)
+        let wrapper = ScrollableStackView(frame: NSRect(x: 0, y: 0, width: 1_200, height: 700))
+        wrapper.stackView.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 10, right: 10)
+        wrapper.stackView.addArrangedSubview(preview)
+        wrapper.layoutSubtreeIfNeeded()
+
+        let cards = self.descendants(of: preview)
+            .compactMap { $0 as? NSStackView }
+            .first { $0.identifier?.rawValue == "traffic-overview-cards" }
+        let topApps = self.descendants(of: preview)
+            .compactMap { $0 as? NSStackView }
+            .first { $0.identifier?.rawValue == "traffic-overview-top-apps" }
+
+        XCTAssertGreaterThan(cards?.frame.width ?? 0, 1_000)
+        XCTAssertLessThan(cards?.frame.minX ?? 10_000, 10)
+        XCTAssertLessThan(topApps?.frame.minY ?? 10_000, 400)
+    }
+
     func testTrafficSelectionRefreshIntervals() {
         XCTAssertNil(TrafficRefreshMode.manual.interval)
         XCTAssertEqual(TrafficRefreshMode.fiveSeconds.interval, 5)
@@ -627,6 +755,11 @@ final class NetAnalyticsTests: XCTestCase {
             upload: upload
         )
     }
+
+    private func descendants(of view: NSView) -> [NSView] {
+        view.subviews.flatMap { [$0] + self.descendants(of: $0) }
+    }
+
 }
 
 private struct FakeProcessMetadataProvider: ProcessMetadataProviding {

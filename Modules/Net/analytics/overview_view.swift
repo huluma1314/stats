@@ -67,11 +67,14 @@ internal final class TrafficOverviewView: NSView {
     }
 
     private func build() {
-        let stack = NSStackView()
+        let stack = FlippedStackView()
         stack.orientation = .vertical
         stack.spacing = 12
-        stack.alignment = .leading
+        stack.alignment = .width
+        stack.distribution = .fill
         stack.translatesAutoresizingMaskIntoConstraints = false
+        self.setContentCompressionResistancePriority(.required, for: .vertical)
+        self.heightAnchor.constraint(greaterThanOrEqualToConstant: 700).isActive = true
         self.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: self.leadingAnchor),
@@ -80,24 +83,42 @@ internal final class TrafficOverviewView: NSView {
             stack.bottomAnchor.constraint(equalTo: self.bottomAnchor)
         ])
 
-        stack.addArrangedSubview(self.card(title: localizedString("Current period"), value: self.periodLabel))
-        stack.addArrangedSubview(self.card(title: localizedString("Used"), value: self.usedLabel))
-        stack.addArrangedSubview(self.card(title: localizedString("Quota"), value: self.quotaLabel))
-        stack.addArrangedSubview(self.card(title: localizedString("Forecast"), value: self.forecastLabel))
+        let cards = NSStackView(views: [
+            self.card(title: localizedString("Current period"), value: self.periodLabel),
+            self.card(title: localizedString("Used"), value: self.usedLabel),
+            self.card(title: localizedString("Quota"), value: self.quotaLabel),
+            self.card(title: localizedString("Forecast"), value: self.forecastLabel)
+        ])
+        cards.identifier = NSUserInterfaceItemIdentifier("traffic-overview-cards")
+        cards.orientation = .horizontal
+        cards.alignment = .top
+        cards.distribution = .fillEqually
+        cards.spacing = 8
+        stack.addArrangedSubview(cards)
+        cards.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
-        let trendTitle = NSTextField(labelWithString: localizedString("Last 7 days"))
-        trendTitle.font = .systemFont(ofSize: 12, weight: .semibold)
         self.trendLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         self.trendLabel.maximumNumberOfLines = 8
-        stack.addArrangedSubview(trendTitle)
-        stack.addArrangedSubview(self.trendLabel)
+        let trend = self.sectionCard(title: localizedString("Last 7 days"), value: self.trendLabel)
+        stack.addArrangedSubview(trend)
+        trend.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
-        let topTitle = NSTextField(labelWithString: localizedString("Top applications"))
-        topTitle.font = .systemFont(ofSize: 12, weight: .semibold)
         self.topAppsLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         self.topAppsLabel.maximumNumberOfLines = 8
-        stack.addArrangedSubview(topTitle)
-        stack.addArrangedSubview(self.topAppsLabel)
+        let top = self.sectionCard(title: localizedString("Top applications"), value: self.topAppsLabel)
+        top.identifier = NSUserInterfaceItemIdentifier("traffic-overview-top-apps")
+        stack.addArrangedSubview(top)
+        top.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        stack.addArrangedSubview(spacer)
+        spacer.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        stack.addSubview(cards, positioned: .above, relativeTo: nil)
+        stack.addSubview(trend, positioned: .above, relativeTo: nil)
+        stack.addSubview(top, positioned: .above, relativeTo: nil)
     }
 
     private func card(title: String, value: NSTextField) -> NSView {
@@ -109,6 +130,20 @@ internal final class TrafficOverviewView: NSView {
         box.orientation = .vertical
         box.alignment = .leading
         box.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+        box.wantsLayer = true
+        box.layer?.cornerRadius = 8
+        box.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        return box
+    }
+
+    private func sectionCard(title: String, value: NSTextField) -> NSView {
+        let titleField = NSTextField(labelWithString: title)
+        titleField.font = .systemFont(ofSize: 12, weight: .semibold)
+        let box = NSStackView(views: [titleField, value])
+        box.orientation = .vertical
+        box.alignment = .leading
+        box.spacing = 6
+        box.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
         box.wantsLayer = true
         box.layer?.cornerRadius = 8
         box.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor

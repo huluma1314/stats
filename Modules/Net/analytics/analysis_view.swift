@@ -28,7 +28,7 @@ internal final class TrafficAnalysisView: NSView {
     private let heatmap = TrafficHeatmapView()
     private let table = ApplicationTrafficTableController()
     private let detail = ApplicationDetailView()
-    private let contentStack = NSStackView()
+    private let contentStack = FlippedStackView()
 
     init(engine: TrafficAnalyticsEngine, repository: TrafficHistoryRepository) {
         self.engine = engine
@@ -68,8 +68,13 @@ internal final class TrafficAnalysisView: NSView {
 
     private func build() {
         self.contentStack.orientation = .vertical
+        self.contentStack.alignment = .width
+        self.contentStack.distribution = .fill
         self.contentStack.spacing = 12
         self.contentStack.translatesAutoresizingMaskIntoConstraints = false
+        self.setContentCompressionResistancePriority(.required, for: .vertical)
+        self.contentStack.setContentCompressionResistancePriority(.required, for: .vertical)
+        self.heightAnchor.constraint(greaterThanOrEqualToConstant: 700).isActive = true
         self.addSubview(self.contentStack)
         NSLayoutConstraint.activate([
             self.contentStack.leadingAnchor.constraint(equalTo: self.leadingAnchor),
@@ -132,6 +137,7 @@ internal final class TrafficAnalysisView: NSView {
         controls.orientation = .horizontal
         controls.spacing = 8
         self.contentStack.addArrangedSubview(controls)
+        controls.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
 
         let cards = NSStackView(views: [
             self.summaryCard(title: localizedString("Download"), field: self.downloadLabel),
@@ -141,7 +147,9 @@ internal final class TrafficAnalysisView: NSView {
         cards.orientation = .horizontal
         cards.distribution = .fillEqually
         cards.spacing = 8
+        cards.identifier = NSUserInterfaceItemIdentifier("traffic-summary-cards")
         self.contentStack.addArrangedSubview(cards)
+        cards.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
 
         self.hoverLabel.textColor = .secondaryLabelColor
         self.hoverLabel.font = .systemFont(ofSize: 11)
@@ -194,6 +202,8 @@ internal final class TrafficAnalysisView: NSView {
         }
         self.contentStack.addArrangedSubview(self.table.rootView())
         self.contentStack.addArrangedSubview(self.detail)
+        self.contentStack.addSubview(cards, positioned: .above, relativeTo: nil)
+        self.contentStack.addSubview(controls, positioned: .above, relativeTo: nil)
     }
 
     private func summaryCard(title: String, field: NSTextField) -> NSView {
