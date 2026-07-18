@@ -79,8 +79,31 @@ reloads the visible data.
 
 The existing `UsageReader` remains the source of interface totals and current
 bandwidth. The existing `ProcessReader` remains the basis for process totals,
-but parsing, identity resolution, and sampling are separated into testable
-components.
+but parsing, identity resolution, command execution, and sampling are separated
+into testable components.
+
+Production process collection runs `nettop` in connection-level CSV logging mode
+without `-P`, because the per-process summary mode does not reliably expose an
+interface for every process row. The command uses only supported flags (for
+example `-L 1 -n -x` plus an explicit `-J`/`-j` selection containing
+`interface`, `bytes_in`, and `bytes_out`), and the parser is header-driven rather
+than depending on fixed column positions. Process summary rows establish the
+owning PID/name and process-lifetime metadata; child socket/connection rows carry
+the cumulative counters and observed interface used for attribution.
+
+Each normalized connection observation retains the kernel process-start token,
+a stable connection key composed from any supplied connection identifier plus
+the normalized protocol/endpoints and interface (or a deterministic normalized
+row fingerprint when no identifier is supplied), cumulative download/upload
+counters, and the observed interface when available. Consecutive snapshots keep
+prior counters by `(process lifetime, connection key, observed interface)`,
+de-duplicate exact repeated observations in a snapshot, compute one non-negative
+monotonic delta per connection, and then aggregate those deltas by
+`(process lifetime, observed interface)`. Distinct connections on the same
+interface are summed; a process summary is never added on top of its child
+connection rows. A usable connection row whose interface is genuinely absent
+retains `nil` attribution, as does a process-only fallback when no usable child
+counters exist; neither receives a fabricated row interface.
 
 Application identity follows these rules:
 
@@ -89,6 +112,16 @@ Application identity follows these rules:
   owning bundle can be resolved.
 - Processes without a bundle identifier are grouped by canonical executable
   path, with the process name as the fallback display name.
+- Each raw record also carries a stable process discriminator composed from
+  executable identity, process ID, and a real kernel process-start token from
+  `proc_bsdinfo` start seconds/microseconds or an equivalent kernel source. The
+  token propagates through reader metadata and `TrafficSample` into the raw v2
+  key; PID, reader time, or a PID-derived synthetic token is insufficient. This
+  prevents PID reuse after exit/relaunch from colliding with an earlier process;
+  concurrent helpers remain distinct even when they share an owning app.
+- Aggregate records intentionally discard that process discriminator and are
+  keyed by network, owning application, and time bucket, so helpers merge into
+  the correct application total.
 - The stored identity includes display name, bundle identifier when available,
   executable path when available, icon lookup metadata, and child process data.
 - Search matches display name, bundle identifier, and process name.
@@ -107,35 +140,65 @@ Filters include all networks, Wi-Fi, Ethernet, hotspot/cellular, and
 VPN/tunnel. Local-network traffic is included by default and can be disabled in
 settings.
 
-Each sample records the observed interface. The all-networks view de-duplicates
-tunnel and physical-interface accounting where the same transfer is visible at
-both layers. De-duplication uses interface class and primary-route context; it
-never subtracts bytes from a single application's monotonic process counters.
+Each sample records the interface observed on its connection-level `nettop` row.
+The current primary network is used only for traffic that remains genuinely
+unattributed after parsing and aggregation; it is not substituted for a missing
+interface on one child row when another observation identifies that connection.
+Physical and tunnel connection observations from the same snapshot remain
+separate `(process lifetime, interface)` totals. Exact repeated connection rows
+are canonicalized before delta calculation, and process summary counters are not
+added to child connection counters, preventing duplicate counting within a
+snapshot. The all-networks view then de-duplicates tunnel and physical-interface
+accounting where the same transfer is visible at both layers. De-duplication uses
+interface class and primary-route context; it never subtracts bytes from a single
+application's monotonic process counters.
 
 ## Persistence And Retention
 
 Historical data is stored locally through Stats' existing LevelDB wrapper. A
-dedicated serial repository queue owns all database access. Keys are ordered by
-schema version, aggregation level, timestamp, network identifier, and
-application identifier so range queries remain prefix-based.
+dedicated serial repository queue owns all database access. Version-2 raw keys
+are ordered by schema version, aggregation level, timestamp, network identifier,
+application identifier, and the stable process discriminator that includes the
+process-start token. Aggregate keys end at network identifier plus application
+identifier for a bucket, allowing every helper for that application to merge
+without raw-key collisions while range queries remain prefix-based.
 
 Retention is tiered:
 
-- One-second samples for 24 hours
-- One-minute aggregates for 30 days
-- One-hour aggregates for 2 years
+- One-second samples for a fixed 24 hours
+- One-minute aggregates for a configurable period, defaulting to 7 days
+- One-hour aggregates for a configurable period, defaulting to 60 days
+- One-day aggregates for a configurable period, defaulting to 730 days
 - Monthly and yearly summaries without automatic expiry
 
-Compaction is incremental and bounded so it cannot block the UI or the network
-reader. Aggregation records preserve download, upload, peak rate, sample count,
-and application/network dimensions. Settings provide a destructive, confirmed
-action to clear all analytics history.
+The one-second period is not configurable. Settings expose the minute, hour, and
+day periods and persist the selected values. Compaction is incremental and
+bounded so it cannot block the UI or the network reader. A source record is
+eligible only when its whole destination bucket ends at or before the cutoff;
+non-aligned cutoffs may retain less than one destination bucket of slack, but
+records are never deleted early. Each maintenance batch contains only complete
+destination buckets. The batch size is a target: when the limit falls inside a
+bucket, compaction finishes that bucket and admits no later bucket. Destination
+replacement and deletion of all exact source keys commit atomically, so
+interruption/restart cannot expose a partial aggregate or duplicate bytes.
+Aggregation records preserve download, upload, peak rate, optional sample count,
+application/network dimensions, and mergeable per-process summaries so process
+export remains available after raw-to-minute and later compaction.
+A legacy aggregate without a persisted sample count keeps that value unknown;
+the decoder never invents a count of one.
+
+The repository exposes separate destructive operations. `deleteTrafficHistory()`
+removes traffic records only. `clearAnalyticsData()` removes traffic plus alert
+events and cooldown/quota/anomaly threshold runtime state while preserving
+retention and alert preferences, network aliases/plans, and saved rules. The
+confirmed Settings reset invokes `clearAnalyticsData()`.
 
 ## Quotas, Forecasts, And Alerts
 
 Users can define independent plans for network identities such as a Wi-Fi SSID
-or hotspot. A plan contains its billing-cycle day, byte limit, and notification
-thresholds. Defaults are the first day of the month and alerts at 80%, 90%, and
+or hotspot. Wi-Fi canonical identity is the logical normalized SSID; BSSIDs are
+observed roaming metadata only and do not split history, aliases, or plans. A plan
+contains its billing-cycle day, byte limit, and notification thresholds. Defaults are the first day of the month and alerts at 80%, 90%, and
 100%. Reaching a network quota never disconnects the network automatically.
 
 Applications can have daily, weekly, monthly, or custom-period quotas. Their
@@ -162,15 +225,35 @@ Per-application blocking and throttling are modeled behind a
 implementation that reports the missing Network Extension entitlement and
 never claims a rule is active.
 
-A Network Extension implementation and its configuration UI are included as a
-separate, capability-gated target. It becomes operational only after a future
-build is signed with the Apple-granted entitlement. The project does not use
-`pf` address rules as a substitute because those rules can affect unrelated
-applications sharing an endpoint.
+The current project defines only the capability interface and an unavailable
+adapter that reports the missing entitlement. The compile-time placeholder branch
+whose no-op apply path reports available is removed or disabled: no shipping build
+may report enforcement available until a functional entitlement-backed adapter
+exists and verifies apply success. A future entitlement-backed integration may
+implement that interface after Apple grants the required Network Extension
+entitlement, but adding an actual Network Extension target is out of scope until
+the entitlement is available. When capability is missing,
+users may still configure and save future rate-limit or block rules, but
+activation and apply controls are unavailable. The UI clearly reports that the
+rule is saved but inactive, never reports a successful apply, and never shows
+the rule as active. Notify-only quota rules remain available because they do not
+require enforcement capability. The project does not use `pf` address rules as
+a substitute because those rules can affect unrelated applications sharing an
+endpoint.
 
-This boundary lets all analytics, quotas, forecasts, exports, and alerts work
-without a paid Apple Developer account while keeping enforcement ready for
-proper signing later.
+This boundary lets all analytics, quotas, forecasts, exports, notifications,
+and alerts work without a paid Apple Developer account while keeping future
+rate-limit and block enforcement ready for proper signing later.
+
+## Proxy And Tunnel Semantics
+
+System proxy configuration is configuration metadata, not evidence that a
+particular flow was forwarded. Stats marks proxy/tunnel routing only when it
+observes a known proxy/tunnel application or interface for that sample. Otherwise
+the sample remains direct; when system proxy settings are enabled, presentation
+uses the separate label `System proxy configured` and explains that per-flow
+attribution is unavailable. Proxy labels never reassign bytes between
+applications.
 
 ## Export
 
@@ -184,10 +267,13 @@ file-system errors without losing the current selection.
 
 The implementation is divided into these units:
 
-- **Sampling:** parse `nettop` output, resolve application identity, and emit
-  normalized deltas.
-- **Repository:** persist samples, aggregate retention tiers, query ranges, and
-  clear history.
+- **Sampling:** execute bounded connection-level `nettop` snapshots without
+  `-P`, parse process/connection hierarchy and interfaces, de-duplicate
+  connection observations, resolve application identity, and emit normalized
+  per-process-lifetime/interface deltas.
+- **Repository:** atomically persist samples with a throwing/result-returning
+  commit API, aggregate retention tiers, query ranges, and perform the two scoped
+  deletion operations.
 - **Analytics:** bucket time ranges, compute summaries, forecasts, rankings,
   heatmap intensity, and anomaly events.
 - **Rules:** store quota and enforcement policies, evaluate thresholds, and
@@ -196,35 +282,62 @@ The implementation is divided into these units:
   view, settings, alert list, and exports.
 
 Readers never update AppKit views directly for the new analytics path. They
-publish normalized samples to the repository and lightweight snapshots to the
-main-thread presentation coordinator. Existing real-time callbacks remain
-unchanged to avoid regressions.
+publish normalized samples to the repository. Only a fully successful atomic
+commit returns a committed batch to the runtime coordinator; failed or partial
+commits trigger no quota evaluation, threshold/cooldown update, alert-event
+creation or notification, or enforcer call. The coordinator publishes
+lightweight snapshots to the main-thread presentation layer. Existing real-time
+callbacks remain unchanged to avoid regressions.
 
 ## Failure Handling
 
-- A failed `nettop` launch records a diagnostic event and retries with bounded
-  backoff; the real-time interface reader continues independently.
-- Malformed process rows are skipped individually and counted for diagnostics.
+- Each connection-level `nettop` snapshot has a finite execution timeout and
+  guaranteed child-process/pipe cleanup. Launch failure, timeout, empty output,
+  or parse failure records diagnostics and retries with bounded, capped backoff;
+  no failure path blocks indefinitely or spins, and the real-time interface
+  reader continues independently.
+- Malformed process or connection rows are skipped individually and counted for
+  diagnostics; valid rows in the same snapshot still proceed.
 - Database open or write failure disables history for the session, shows a
-  non-blocking status, and retains real-time monitoring.
-- Interrupted aggregation is idempotent because aggregate keys are replaced
-  atomically after source data has been read.
+  non-blocking status, and retains real-time monitoring. Persistence reports
+  success only for a fully committed atomic batch; failed or partial attempts
+  have no quota, alert, cooldown/threshold, notification, or enforcement side
+  effects.
+- Interrupted aggregation is idempotent because compaction admits complete
+  destination buckets only and atomically replaces each destination together
+  with deletion of all exact source keys.
 - Export failures leave the database and current UI state unchanged.
-- Missing enforcement entitlement disables enforcement controls with an
-  accurate explanation and no false success state.
+- Missing enforcement entitlement still permits saving future rate-limit and
+  block rules, but activation and apply controls remain unavailable; the UI
+  reports saved but inactive, with no false success state and no `pf` fallback.
 
 ## Testing And Acceptance
 
-Unit tests cover process parsing, identity grouping, monotonic counter resets,
-time bucketing across calendar boundaries, retention aggregation, filtering,
-ranking, forecasts, quotas, anomalies, and CSV/JSON encoding. Repository tests
-use a temporary LevelDB directory. Rule tests use a fake enforcer and verify
-that the unavailable production enforcer cannot report success.
+Unit tests cover process parsing, reader-to-repository PID reuse with distinct
+kernel start tokens, connection-row de-duplication and monotonic deltas, per-row
+physical/tunnel interface propagation, identity grouping, Wi-Fi roaming across
+BSSIDs, multi-helper raw-key round trips across restart, monotonic counter resets,
+legacy aggregates with unknown sample count, time bucketing across calendar
+boundaries, non-aligned-now retention eligibility, complete-bucket batch limits
+and interruption recovery, raw-to-minute process export, both scoped deletion
+APIs, filtering, ranking, forecasts, quotas, anomalies, honest proxy labeling for
+direct traffic with proxy configuration, and CSV/JSON encoding. Repository tests
+use a temporary LevelDB directory and injected atomic write failures. Coordinator
+tests prove failed or partial commits produce no quota/event/enforcer side
+effects. Rule tests use a fake enforcer and verify that the unavailable production
+enforcer and every shipping placeholder configuration cannot report success or
+availability.
 
 Integration verification covers:
 
+- The production command builder invokes connection-level `nettop` without `-P`
+  and its real parser consumes representative CSV containing process parents,
+  repeated connection rows, unavailable interface attribution, and simultaneous
+  physical/tunnel observations. The resulting deltas are counted once per
+  connection and aggregated by process lifetime and interface; a timeout/failure
+  fixture proves command cleanup and retry backoff stay bounded.
 - Existing Stats tests remain green.
-- Debug builds succeed on the current machine with the macOS 12 target intact.
+- Debug builds succeed with Xcode 26.4.1 (build 17E202) and the macOS 12 target intact.
 - Network preview callbacks still update the existing real-time page.
 - History survives application restart and totals match exported data.
 - Manual display refresh does not pause collection.
