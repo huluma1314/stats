@@ -358,6 +358,7 @@ final class NetAnalyticsTests: XCTestCase {
             .first { $0.segmentCount == TrafficRange.allCases.count }
         let chart = descendants.compactMap { $0 as? TrafficTimelineChartView }.first
         let outline = descendants.compactMap { $0 as? NSOutlineView }.first
+        let detail = descendants.compactMap { $0 as? ApplicationDetailView }.first
         let customRange = descendants.compactMap { $0 as? NSButton }.first {
             $0.identifier?.rawValue == "traffic-custom-range"
         }
@@ -371,6 +372,7 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertGreaterThan(rangeControl?.frame.height ?? 0, 20)
         XCTAssertGreaterThan(chart?.frame.width ?? 0, 1_000)
         XCTAssertGreaterThan(outline?.enclosingScrollView?.frame.width ?? 0, 1_000)
+        XCTAssertGreaterThan(detail?.frame.width ?? 0, 1_000)
     }
 
     func testNetworkPreviewAnalysisPageStretchesItsContent() {
@@ -702,6 +704,41 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertTrue(reloaded.anomalyDetectionEnabled)
         XCTAssertEqual(reloaded.overQuotaAction, .rateLimit)
         XCTAssertEqual(reloaded.minuteRetentionDays, 14)
+    }
+
+    func testApplicationTrafficRulesPersistAndDetailExposesControls() {
+        let suiteName = "net.analytics.application.rules.tests"
+        let suite = UserDefaults(suiteName: suiteName)!
+        suite.removePersistentDomain(forName: suiteName)
+        let store = TrafficRuleStore(defaults: suite)
+        let rule = ApplicationTrafficRule(
+            applicationID: "app.control",
+            period: .weekly,
+            byteLimit: 5_000_000_000,
+            downloadLimitBytesPerSecond: 1_000_000,
+            uploadLimitBytesPerSecond: 500_000,
+            action: .rateLimit
+        )
+        store.save(applicationRules: [rule])
+        XCTAssertEqual(store.applicationRules(), [rule])
+
+        let view = ApplicationDetailView(enforcer: FakeNetworkRuleEnforcer(), ruleStore: store)
+        view.frame = NSRect(x: 0, y: 0, width: 1_000, height: 520)
+        view.show(ApplicationTrafficSummary(
+            identity: ApplicationIdentity(id: "app.control", displayName: "Control", bundleIdentifier: "app.control", executablePath: nil),
+            download: 100,
+            upload: 50,
+            peakBytesPerSecond: 20,
+            processes: []
+        ))
+        view.layoutSubtreeIfNeeded()
+
+        let identifiers = Set(self.descendants(of: view).compactMap { $0.identifier?.rawValue })
+        XCTAssertTrue(identifiers.contains("traffic-rule-period"))
+        XCTAssertTrue(identifiers.contains("traffic-rule-download"))
+        XCTAssertTrue(identifiers.contains("traffic-rule-upload"))
+        XCTAssertTrue(identifiers.contains("traffic-rule-action"))
+        XCTAssertTrue(identifiers.contains("traffic-rule-save"))
     }
 
     func testUnavailableEnforcerNeverSucceeds() {

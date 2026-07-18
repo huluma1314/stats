@@ -229,6 +229,7 @@ internal final class TrafficAnalysisView: NSView {
         }
         self.contentStack.addArrangedSubview(self.table.rootView())
         self.contentStack.addArrangedSubview(self.detail)
+        self.detail.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
         self.contentStack.addSubview(cards, positioned: .above, relativeTo: nil)
         self.contentStack.addSubview(controls, positioned: .above, relativeTo: nil)
     }
