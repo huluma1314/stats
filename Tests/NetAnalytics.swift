@@ -358,8 +358,16 @@ final class NetAnalyticsTests: XCTestCase {
             .first { $0.segmentCount == TrafficRange.allCases.count }
         let chart = descendants.compactMap { $0 as? TrafficTimelineChartView }.first
         let outline = descendants.compactMap { $0 as? NSOutlineView }.first
+        let customRange = descendants.compactMap { $0 as? NSButton }.first {
+            $0.identifier?.rawValue == "traffic-custom-range"
+        }
+        let more = descendants.compactMap { $0 as? NSPopUpButton }.first {
+            $0.identifier?.rawValue == "traffic-more-options"
+        }
 
         XCTAssertNotNil(rangeControl)
+        XCTAssertNotNil(customRange)
+        XCTAssertNotNil(more)
         XCTAssertGreaterThan(rangeControl?.frame.height ?? 0, 20)
         XCTAssertGreaterThan(chart?.frame.width ?? 0, 1_000)
         XCTAssertGreaterThan(outline?.enclosingScrollView?.frame.width ?? 0, 1_000)
@@ -468,6 +476,43 @@ final class NetAnalyticsTests: XCTestCase {
         let selection = TrafficSelection(range: .tenMinutes)
         let interval = selection.interval(now: now)
         XCTAssertEqual(interval.duration, 600, accuracy: 0.001)
+    }
+
+    func testCustomTrafficRangeValidation() {
+        let now = Date(timeIntervalSince1970: 2_200_000_000)
+        XCTAssertNil(TrafficCustomRange.interval(start: now, end: now, now: now))
+        XCTAssertNil(TrafficCustomRange.interval(start: now, end: now.addingTimeInterval(-1), now: now))
+
+        let interval = TrafficCustomRange.interval(
+            start: now.addingTimeInterval(-3_600),
+            end: now.addingTimeInterval(60),
+            now: now
+        )
+        XCTAssertEqual(interval?.start, now.addingTimeInterval(-3_600))
+        XCTAssertEqual(interval?.end, now)
+    }
+
+    func testAnalyticsEngineFetchesOutsidePresetForCustomInterval() {
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let engine = TrafficAnalyticsEngine(repository: repository)
+        let now = Date(timeIntervalSince1970: 2_200_000_000)
+        let wifi = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        repository.insert(self.sample(
+            at: now.addingTimeInterval(-2 * 60 * 60),
+            network: wifi,
+            applicationID: "app.custom",
+            download: 500,
+            upload: 100
+        ))
+
+        let snapshot = engine.snapshot(for: TrafficAnalyticsQuery(
+            range: .tenMinutes,
+            selectedInterval: DateInterval(start: now.addingTimeInterval(-3 * 60 * 60), end: now),
+            now: now
+        ))
+
+        XCTAssertEqual(snapshot.total, 600)
+        XCTAssertEqual(snapshot.ranking.map(\.identity.id), ["app.custom"])
     }
 
     func testLiveTrafficWindowDurations() {

@@ -131,6 +131,7 @@ internal final class TrafficTimelineChartView: NSView {
 
     private var dragStart: CGPoint?
     private var dragCurrent: CGPoint?
+    private var hoverIndex: Int?
 
     override var isFlipped: Bool { true }
 
@@ -140,8 +141,7 @@ internal final class TrafficTimelineChartView: NSView {
         let plot = TrafficChartGeometry.plotRect(in: self.bounds)
         NSColor.controlBackgroundColor.setFill()
         dirtyRect.fill()
-        NSColor.separatorColor.withAlphaComponent(0.4).setStroke()
-        context.stroke(plot)
+        self.drawGrid(in: plot)
 
         guard !self.points.isEmpty else {
             let text = localizedString("No chart data") as NSString
@@ -158,6 +158,7 @@ internal final class TrafficTimelineChartView: NSView {
         let maxValue = max(self.points.map(\.total).max() ?? 1, 1)
         let downloadPath = CGMutablePath()
         let uploadPath = CGMutablePath()
+        let downloadFill = CGMutablePath()
         for (index, point) in self.points.enumerated() {
             let x = TrafficChartGeometry.xPosition(index: index, count: self.points.count, in: plot)
             let downloadY = plot.maxY - (plot.height * CGFloat(point.download) / CGFloat(maxValue))
@@ -165,11 +166,20 @@ internal final class TrafficTimelineChartView: NSView {
             if index == 0 {
                 downloadPath.move(to: CGPoint(x: x, y: downloadY))
                 uploadPath.move(to: CGPoint(x: x, y: uploadY))
+                downloadFill.move(to: CGPoint(x: x, y: plot.maxY))
+                downloadFill.addLine(to: CGPoint(x: x, y: downloadY))
             } else {
                 downloadPath.addLine(to: CGPoint(x: x, y: downloadY))
                 uploadPath.addLine(to: CGPoint(x: x, y: uploadY))
+                downloadFill.addLine(to: CGPoint(x: x, y: downloadY))
             }
         }
+
+        downloadFill.addLine(to: CGPoint(x: plot.maxX, y: plot.maxY))
+        downloadFill.closeSubpath()
+        context.setFillColor(NSColor.systemBlue.withAlphaComponent(0.10).cgColor)
+        context.addPath(downloadFill)
+        context.fillPath()
 
         context.setStrokeColor(NSColor.systemBlue.cgColor)
         context.setLineWidth(1.5)
@@ -185,6 +195,8 @@ internal final class TrafficTimelineChartView: NSView {
             context.setFillColor(NSColor.systemBlue.withAlphaComponent(0.15).cgColor)
             context.fill(rect)
         }
+
+        self.drawHover(in: plot)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -202,6 +214,7 @@ internal final class TrafficTimelineChartView: NSView {
             count: self.points.count,
             in: TrafficChartGeometry.plotRect(in: self.bounds)
            ) {
+            self.hoverIndex = index
             self.onHover?(self.points[index])
         }
     }
@@ -235,10 +248,20 @@ internal final class TrafficTimelineChartView: NSView {
             count: self.points.count,
             in: TrafficChartGeometry.plotRect(in: self.bounds)
         ) else {
+            self.hoverIndex = nil
             self.onHover?(nil)
+            self.needsDisplay = true
             return
         }
+        self.hoverIndex = index
         self.onHover?(self.points[index])
+        self.needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        self.hoverIndex = nil
+        self.onHover?(nil)
+        self.needsDisplay = true
     }
 
     override func updateTrackingAreas() {
@@ -247,11 +270,82 @@ internal final class TrafficTimelineChartView: NSView {
         self.addTrackingArea(
             NSTrackingArea(
                 rect: self.bounds,
-                options: [.activeInKeyWindow, .mouseMoved, .inVisibleRect],
+                options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
                 owner: self,
                 userInfo: nil
             )
         )
+    }
+
+    private func drawGrid(in plot: CGRect) {
+        let lineColor = NSColor.separatorColor.withAlphaComponent(0.28)
+        let maximum = max(self.points.map(\.total).max() ?? 1, 1)
+        for index in 0...4 {
+            let y = plot.minY + plot.height * CGFloat(index) / 4
+            let line = NSBezierPath()
+            line.move(to: CGPoint(x: plot.minX, y: y))
+            line.line(to: CGPoint(x: plot.maxX, y: y))
+            lineColor.setStroke()
+            line.lineWidth = 0.5
+            line.stroke()
+
+            let value = maximum * UInt64(4 - index) / 4
+            let label = Units(bytes: Int64(value)).getReadableMemory() as NSString
+            label.draw(
+                at: CGPoint(x: 2, y: y - 5),
+                withAttributes: [
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .regular)
+                ]
+            )
+        }
+
+        guard !self.points.isEmpty else { return }
+        let formatter = DateFormatter()
+        let duration = (self.points.last?.timestamp.timeIntervalSince(self.points.first?.timestamp ?? Date())) ?? 0
+        formatter.dateFormat = duration > 86_400 ? "MM-dd" : "HH:mm"
+        let ticks = min(5, self.points.count)
+        for tick in 0..<ticks {
+            let index = ticks == 1 ? 0 : Int((Double(self.points.count - 1) * Double(tick) / Double(ticks - 1)).rounded())
+            let x = TrafficChartGeometry.xPosition(index: index, count: self.points.count, in: plot)
+            let label = formatter.string(from: self.points[index].timestamp) as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+            ]
+            let size = label.size(withAttributes: attributes)
+            label.draw(at: CGPoint(x: max(0, min(self.bounds.width - size.width, x - size.width / 2)), y: plot.maxY + 4), withAttributes: attributes)
+        }
+    }
+
+    private func drawHover(in plot: CGRect) {
+        guard let index = self.hoverIndex, self.points.indices.contains(index) else { return }
+        let point = self.points[index]
+        let x = TrafficChartGeometry.xPosition(index: index, count: self.points.count, in: plot)
+        let line = NSBezierPath()
+        line.move(to: CGPoint(x: x, y: plot.minY))
+        line.line(to: CGPoint(x: x, y: plot.maxY))
+        NSColor.secondaryLabelColor.withAlphaComponent(0.55).setStroke()
+        line.lineWidth = 0.8
+        line.stroke()
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm:ss"
+        let text = "\(formatter.string(from: point.timestamp))  ↓ \(Units(bytes: Int64(point.download)).getReadableMemory())  ↑ \(Units(bytes: Int64(point.upload)).getReadableMemory())" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor.labelColor,
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        ]
+        let textSize = text.size(withAttributes: attributes)
+        let width = textSize.width + 14
+        let height = textSize.height + 10
+        let originX = min(plot.maxX - width, max(plot.minX, x + 8))
+        let box = CGRect(x: originX, y: plot.minY + 8, width: width, height: height)
+        NSColor.windowBackgroundColor.withAlphaComponent(0.96).setFill()
+        NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
+        NSColor.separatorColor.setStroke()
+        NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).stroke()
+        text.draw(at: CGPoint(x: box.minX + 7, y: box.minY + 5), withAttributes: attributes)
     }
 }
 

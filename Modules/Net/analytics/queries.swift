@@ -153,12 +153,14 @@ public final class TrafficAnalyticsEngine {
     }
 
     public func snapshot(for query: TrafficAnalyticsQuery) -> TrafficAnalyticsSnapshot {
-        let interval = TrafficAggregation.interval(
+        let preset = TrafficAggregation.interval(
             for: query.range,
             now: query.now,
             calendar: self.calendar
         )
-        let level = self.storageLevel(for: query.range)
+        let interval = query.selectedInterval ?? DateInterval(start: preset.start, end: preset.end)
+        let effectiveRange = query.selectedInterval.map { TrafficCustomRange.range(for: $0.duration) } ?? query.range
+        let level = self.storageLevel(for: effectiveRange)
         var samples = self.repository.fetch(
             TrafficHistoryQuery(level: level, start: interval.start, end: interval.end)
         )
@@ -179,17 +181,14 @@ public final class TrafficAnalyticsEngine {
         if !query.includeLocalNetwork {
             samples = samples.filter { $0.network.kind != .other }
         }
-        if let selected = query.selectedInterval {
-            samples = samples.filter { $0.timestamp >= selected.start && $0.timestamp <= selected.end }
-        }
-
         let download = samples.reduce(UInt64(0)) { $0 + $1.delta.download }
         let upload = samples.reduce(UInt64(0)) { $0 + $1.delta.upload }
         let buckets = TrafficAggregation.buckets(
             samples: samples,
-            range: query.range,
-            now: query.now,
-            calendar: self.calendar
+            range: effectiveRange,
+            now: interval.end,
+            calendar: self.calendar,
+            interval: interval
         )
         let ranking = self.rank(samples: samples, search: query.applicationSearch)
         let forecast = self.forecast(

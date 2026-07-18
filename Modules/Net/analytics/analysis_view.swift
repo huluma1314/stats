@@ -19,7 +19,10 @@ internal final class TrafficAnalysisView: NSView {
     private let refreshControl = NSPopUpButton()
     private let networkControl = NSPopUpButton()
     private let exportControl = NSPopUpButton()
+    private let moreControl = NSPopUpButton()
     private let refreshButton = NSButton()
+    private let dateButton = NSButton()
+    private let datePopover = NSPopover()
     private let downloadLabel = NSTextField(labelWithString: "—")
     private let uploadLabel = NSTextField(labelWithString: "—")
     private let totalLabel = NSTextField(labelWithString: "—")
@@ -121,21 +124,45 @@ internal final class TrafficAnalysisView: NSView {
         self.exportControl.target = self
         self.exportControl.action = #selector(self.exportChanged)
 
+        self.moreControl.addItem(withTitle: localizedString("More"))
+        self.moreControl.addItem(withTitle: localizedString("Full timeline"))
+        self.moreControl.identifier = NSUserInterfaceItemIdentifier("traffic-more-options")
+        self.moreControl.target = self
+        self.moreControl.action = #selector(self.moreChanged)
+
+        self.dateButton.image = NSImage(systemSymbolName: "calendar.badge.clock", accessibilityDescription: localizedString("Custom time range"))
+        self.dateButton.identifier = NSUserInterfaceItemIdentifier("traffic-custom-range")
+        self.dateButton.bezelStyle = .texturedRounded
+        self.dateButton.toolTip = localizedString("Custom time range")
+        self.dateButton.target = self
+        self.dateButton.action = #selector(self.showCustomRange)
+
         self.refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         self.refreshButton.bezelStyle = .texturedRounded
         self.refreshButton.target = self
         self.refreshButton.action = #selector(self.refreshClicked)
 
-        let controls = NSStackView(views: [
-            self.rangeControl,
+        let rangeRow = NSStackView(views: [self.rangeControl, self.dateButton])
+        rangeRow.orientation = .horizontal
+        rangeRow.alignment = .centerY
+        rangeRow.spacing = 8
+
+        let optionsRow = NSStackView(views: [
             self.chartModeControl,
             self.networkControl,
             self.refreshControl,
             self.exportControl,
+            self.moreControl,
             self.refreshButton
         ])
-        controls.orientation = .horizontal
-        controls.spacing = 8
+        optionsRow.orientation = .horizontal
+        optionsRow.alignment = .centerY
+        optionsRow.spacing = 8
+
+        let controls = FlippedStackView(views: [rangeRow, optionsRow])
+        controls.orientation = .vertical
+        controls.alignment = .leading
+        controls.spacing = 7
         self.contentStack.addArrangedSubview(controls)
         controls.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
 
@@ -276,6 +303,42 @@ internal final class TrafficAnalysisView: NSView {
                 }
             }
         }
+    }
+
+    @objc private func moreChanged() {
+        guard self.moreControl.indexOfSelectedItem == 1 else { return }
+        self.moreControl.selectItem(at: 0)
+        self.selection.selectedInterval = nil
+        if let index = TrafficRange.allCases.firstIndex(of: self.selection.range) {
+            self.rangeControl.selectedSegment = index
+        }
+        self.reload()
+    }
+
+    @objc private func showCustomRange() {
+        let now = Date()
+        let end = self.selection.selectedInterval?.end ?? now
+        let start = self.selection.selectedInterval?.start ?? end.addingTimeInterval(-3_600)
+        let view = TrafficCustomRangePopoverView(
+            start: start,
+            end: end,
+            onCancel: { [weak self] in self?.datePopover.close() },
+            onApply: { [weak self] start, end in
+                guard let self,
+                      let interval = TrafficCustomRange.interval(start: start, end: end) else { return }
+                self.selection.selectedInterval = interval
+                self.selection.range = TrafficCustomRange.range(for: interval.duration)
+                self.rangeControl.selectedSegment = -1
+                self.datePopover.close()
+                self.reload()
+            }
+        )
+        let controller = NSViewController()
+        controller.view = view
+        self.datePopover.contentViewController = controller
+        self.datePopover.contentSize = NSSize(width: 330, height: 190)
+        self.datePopover.behavior = .transient
+        self.datePopover.show(relativeTo: self.dateButton.bounds, of: self.dateButton, preferredEdge: .maxY)
     }
 
     @objc private func refreshClicked() {
@@ -514,6 +577,105 @@ internal final class LiveTrafficView: NSView {
         case .fiveMinutes: return "5m"
         case .fifteenMinutes: return "15m"
         }
+    }
+}
+
+internal final class TrafficCustomRangePopoverView: NSView {
+    private let startPicker = NSDatePicker()
+    private let endPicker = NSDatePicker()
+    private let onCancel: () -> Void
+    private let onApply: (Date, Date) -> Void
+
+    init(start: Date, end: Date, onCancel: @escaping () -> Void, onApply: @escaping (Date, Date) -> Void) {
+        self.onCancel = onCancel
+        self.onApply = onApply
+        super.init(frame: NSRect(x: 0, y: 0, width: 330, height: 190))
+        self.translatesAutoresizingMaskIntoConstraints = false
+        self.startPicker.dateValue = start
+        self.endPicker.dateValue = end
+        self.build()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func build() {
+        let stack = FlippedStackView()
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 9
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        self.addSubview(stack)
+        NSLayoutConstraint.activate([
+            self.widthAnchor.constraint(equalToConstant: 330),
+            self.heightAnchor.constraint(equalToConstant: 190),
+            stack.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: self.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: self.bottomAnchor)
+        ])
+
+        let title = NSTextField(labelWithString: localizedString("Custom time range"))
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        stack.addArrangedSubview(title)
+
+        [self.startPicker, self.endPicker].forEach {
+            $0.datePickerStyle = .textFieldAndStepper
+            $0.datePickerElements = [.yearMonthDay, .hourMinute]
+        }
+        stack.addArrangedSubview(self.pickerRow(title: localizedString("Start"), picker: self.startPicker))
+        stack.addArrangedSubview(self.pickerRow(title: localizedString("End"), picker: self.endPicker))
+
+        let quick = NSStackView()
+        quick.orientation = .horizontal
+        quick.distribution = .fillEqually
+        quick.spacing = 6
+        [(1, localizedString("Last hour")), (3, localizedString("Last 3 hours")), (24, localizedString("Last 24 hours"))].forEach { hours, title in
+            let button = NSButton(title: title, target: self, action: #selector(self.quickRange(_:)))
+            button.tag = hours
+            button.bezelStyle = .rounded
+            quick.addArrangedSubview(button)
+        }
+        stack.addArrangedSubview(quick)
+
+        let actions = NSStackView()
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.distribution = .equalSpacing
+        let cancel = NSButton(title: localizedString("Cancel"), target: self, action: #selector(self.cancel))
+        let apply = NSButton(title: localizedString("Apply"), target: self, action: #selector(self.apply))
+        apply.keyEquivalent = "\r"
+        actions.addArrangedSubview(cancel)
+        actions.addArrangedSubview(apply)
+        stack.addArrangedSubview(actions)
+    }
+
+    private func pickerRow(title: String, picker: NSDatePicker) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        let row = NSStackView(views: [label, picker])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        return row
+    }
+
+    @objc private func quickRange(_ sender: NSButton) {
+        let end = Date()
+        self.endPicker.dateValue = end
+        self.startPicker.dateValue = end.addingTimeInterval(-TimeInterval(sender.tag) * 3_600)
+    }
+
+    @objc private func cancel() {
+        self.onCancel()
+    }
+
+    @objc private func apply() {
+        self.onApply(self.startPicker.dateValue, self.endPicker.dateValue)
     }
 }
 

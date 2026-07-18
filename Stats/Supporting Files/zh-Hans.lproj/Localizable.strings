@@ -524,6 +524,15 @@
 "Active processes" = "活跃进程";
 "No active processes" = "暂无活跃进程";
 "Used this month" = "本月已用";
+"More" = "更多";
+"Full timeline" = "完整时间轴";
+"Custom time range" = "自定义时间范围";
+"Start" = "起";
+"End" = "止";
+"Last hour" = "最近 1 小时";
+"Last 3 hours" = "最近 3 小时";
+"Last 24 hours" = "最近 24 小时";
+"Apply" = "应用";
 "Line" = "折线";
 "Heatmap" = "热力图";
 "All networks" = "全部网络";

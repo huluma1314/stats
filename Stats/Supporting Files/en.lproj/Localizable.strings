@@ -524,6 +524,15 @@
 "Active processes" = "Active processes";
 "No active processes" = "No active processes";
 "Used this month" = "Used this month";
+"More" = "More";
+"Full timeline" = "Full timeline";
+"Custom time range" = "Custom time range";
+"Start" = "Start";
+"End" = "End";
+"Last hour" = "Last hour";
+"Last 3 hours" = "Last 3 hours";
+"Last 24 hours" = "Last 24 hours";
+"Apply" = "Apply";
 "Line" = "Line";
 "Heatmap" = "Heatmap";
 "All networks" = "All networks";

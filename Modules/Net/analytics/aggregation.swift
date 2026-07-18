@@ -112,10 +112,12 @@ public enum TrafficAggregation {
         samples: [TrafficSample],
         range: TrafficRange,
         now: Date,
-        calendar: Calendar
+        calendar: Calendar,
+        interval customInterval: DateInterval? = nil
     ) -> [TrafficBucket] {
         let kind = self.heatmapKind(for: range)
-        let interval = self.interval(for: range, now: now, calendar: calendar)
+        let preset = self.interval(for: range, now: now, calendar: calendar)
+        let interval = customInterval ?? DateInterval(start: preset.start, end: preset.end)
         var grouped: [Date: (download: UInt64, upload: UInt64, peak: UInt64, count: Int)] = [:]
 
         for sample in samples where sample.timestamp >= interval.start && sample.timestamp <= interval.end {

@@ -5,6 +5,25 @@
 
 import Foundation
 
+public enum TrafficCustomRange {
+    public static func interval(start: Date, end: Date, now: Date = Date()) -> DateInterval? {
+        let clampedEnd = min(end, now)
+        guard start < clampedEnd else { return nil }
+        return DateInterval(start: start, end: clampedEnd)
+    }
+
+    public static func range(for duration: TimeInterval) -> TrafficRange {
+        switch duration {
+        case ...600: return .tenMinutes
+        case ...3_600: return .oneHour
+        case ...86_400: return .today
+        case ...(7 * 86_400): return .sevenDays
+        case ...(30 * 86_400): return .thirtyDays
+        default: return .currentMonth
+        }
+    }
+}
+
 public enum TrafficChartMode: String, CaseIterable {
     case line
     case heatmap
