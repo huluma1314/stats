@@ -13,8 +13,8 @@ internal final class TrafficOverviewView: NSView {
     private let usedLabel = NSTextField(labelWithString: "—")
     private let quotaLabel = NSTextField(labelWithString: "—")
     private let forecastLabel = NSTextField(labelWithString: "—")
-    private let trendLabel = NSTextField(labelWithString: "")
-    private let topAppsLabel = NSTextField(labelWithString: "")
+    private let trendView = TrafficOverviewTrendView()
+    private let appsView = TrafficOverviewAppsView()
 
     init(engine: TrafficAnalyticsEngine, planStore: TrafficRuleStore) {
         self.engine = engine
@@ -54,16 +54,8 @@ internal final class TrafficOverviewView: NSView {
         }
 
         let week = self.engine.snapshot(for: TrafficAnalyticsQuery(range: .sevenDays, now: now))
-        self.trendLabel.stringValue = week.buckets.suffix(7).map {
-            "\(Self.dayFormatter.string(from: $0.start)): \(Units(bytes: Int64($0.download + $0.upload)).getReadableMemory())"
-        }.joined(separator: "\n")
-
-        let top = snapshot.ranking.prefix(5)
-        let total = max(snapshot.total, 1)
-        self.topAppsLabel.stringValue = top.map {
-            let percent = Int((Double($0.total) / Double(total)) * 100)
-            return "\($0.identity.displayName): \(Units(bytes: Int64($0.total)).getReadableMemory()) (\(percent)%)"
-        }.joined(separator: "\n")
+        self.trendView.buckets = Array(week.buckets.suffix(7))
+        self.appsView.update(Array(snapshot.ranking.prefix(6)), total: max(snapshot.total, 1))
     }
 
     private func build() {
@@ -83,29 +75,47 @@ internal final class TrafficOverviewView: NSView {
             stack.bottomAnchor.constraint(equalTo: self.bottomAnchor)
         ])
 
-        let cards = NSStackView(views: [
-            self.card(title: localizedString("Current period"), value: self.periodLabel),
-            self.card(title: localizedString("Used"), value: self.usedLabel),
-            self.card(title: localizedString("Quota"), value: self.quotaLabel),
-            self.card(title: localizedString("Forecast"), value: self.forecastLabel)
+        self.usedLabel.font = .systemFont(ofSize: 32, weight: .semibold)
+        let usedBlock = NSStackView(views: [
+            NSTextField(labelWithString: localizedString("Used this month")),
+            self.usedLabel
         ])
-        cards.identifier = NSUserInterfaceItemIdentifier("traffic-overview-cards")
-        cards.orientation = .horizontal
-        cards.alignment = .top
-        cards.distribution = .fillEqually
-        cards.spacing = 8
-        stack.addArrangedSubview(cards)
-        cards.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        usedBlock.orientation = .vertical
+        usedBlock.alignment = .leading
+        usedBlock.spacing = 4
 
-        self.trendLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        self.trendLabel.maximumNumberOfLines = 8
-        let trend = self.sectionCard(title: localizedString("Last 7 days"), value: self.trendLabel)
+        let details = NSStackView(views: [self.periodLabel, self.quotaLabel, self.forecastLabel])
+        details.orientation = .vertical
+        details.alignment = .leading
+        details.spacing = 6
+        details.arrangedSubviews.compactMap { $0 as? NSTextField }.forEach {
+            $0.textColor = .secondaryLabelColor
+            $0.font = .systemFont(ofSize: 11)
+        }
+
+        let hero = NSStackView(views: [usedBlock, details])
+        hero.identifier = NSUserInterfaceItemIdentifier("traffic-overview-cards")
+        hero.orientation = .horizontal
+        hero.alignment = .centerY
+        hero.distribution = .fill
+        hero.spacing = 24
+        hero.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
+        hero.wantsLayer = true
+        hero.layer?.cornerRadius = 10
+        hero.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        hero.heightAnchor.constraint(greaterThanOrEqualToConstant: 106).isActive = true
+        stack.addArrangedSubview(hero)
+        hero.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        self.trendView.translatesAutoresizingMaskIntoConstraints = false
+        self.trendView.heightAnchor.constraint(equalToConstant: 155).isActive = true
+        let trend = self.sectionCard(title: localizedString("Last 7 days"), value: self.trendView)
         stack.addArrangedSubview(trend)
         trend.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
-        self.topAppsLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        self.topAppsLabel.maximumNumberOfLines = 8
-        let top = self.sectionCard(title: localizedString("Top applications"), value: self.topAppsLabel)
+        self.appsView.translatesAutoresizingMaskIntoConstraints = false
+        self.appsView.heightAnchor.constraint(equalToConstant: 142).isActive = true
+        let top = self.sectionCard(title: localizedString("Top applications"), value: self.appsView)
         top.identifier = NSUserInterfaceItemIdentifier("traffic-overview-top-apps")
         stack.addArrangedSubview(top)
         top.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -116,27 +126,12 @@ internal final class TrafficOverviewView: NSView {
         stack.addArrangedSubview(spacer)
         spacer.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
-        stack.addSubview(cards, positioned: .above, relativeTo: nil)
+        stack.addSubview(hero, positioned: .above, relativeTo: nil)
         stack.addSubview(trend, positioned: .above, relativeTo: nil)
         stack.addSubview(top, positioned: .above, relativeTo: nil)
     }
 
-    private func card(title: String, value: NSTextField) -> NSView {
-        let titleField = NSTextField(labelWithString: title)
-        titleField.textColor = .secondaryLabelColor
-        titleField.font = .systemFont(ofSize: 11, weight: .medium)
-        value.font = .systemFont(ofSize: 16, weight: .semibold)
-        let box = NSStackView(views: [titleField, value])
-        box.orientation = .vertical
-        box.alignment = .leading
-        box.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
-        box.wantsLayer = true
-        box.layer?.cornerRadius = 8
-        box.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        return box
-    }
-
-    private func sectionCard(title: String, value: NSTextField) -> NSView {
+    private func sectionCard(title: String, value: NSView) -> NSView {
         let titleField = NSTextField(labelWithString: title)
         titleField.font = .systemFont(ofSize: 12, weight: .semibold)
         let box = NSStackView(views: [titleField, value])
@@ -150,9 +145,97 @@ internal final class TrafficOverviewView: NSView {
         return box
     }
 
-    private static let dayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MM-dd"
-        return formatter
-    }()
+}
+
+private final class TrafficOverviewTrendView: NSView {
+    var buckets: [TrafficBucket] = [] {
+        didSet { self.needsDisplay = true }
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let plot = self.bounds.insetBy(dx: 8, dy: 12)
+        guard !self.buckets.isEmpty else {
+            (localizedString("Insufficient data") as NSString).draw(
+                at: CGPoint(x: plot.midX - 45, y: plot.midY - 8),
+                withAttributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 11)]
+            )
+            return
+        }
+
+        let totals = self.buckets.map { CGFloat($0.download + $0.upload) }
+        let maximum = max(totals.max() ?? 1, 1)
+        let line = NSBezierPath()
+        let fill = NSBezierPath()
+        for (index, total) in totals.enumerated() {
+            let x = plot.minX + plot.width * CGFloat(index) / CGFloat(max(totals.count - 1, 1))
+            let y = plot.maxY - (plot.height * total / maximum)
+            if index == 0 {
+                line.move(to: CGPoint(x: x, y: y))
+                fill.move(to: CGPoint(x: x, y: plot.maxY))
+                fill.line(to: CGPoint(x: x, y: y))
+            } else {
+                line.line(to: CGPoint(x: x, y: y))
+                fill.line(to: CGPoint(x: x, y: y))
+            }
+        }
+        fill.line(to: CGPoint(x: plot.maxX, y: plot.maxY))
+        fill.close()
+        NSColor.systemBlue.withAlphaComponent(0.12).setFill()
+        fill.fill()
+        NSColor.systemBlue.setStroke()
+        line.lineWidth = 1.5
+        line.stroke()
+    }
+}
+
+private final class TrafficOverviewAppsView: NSView {
+    private var items: [ApplicationTrafficSummary] = []
+    private var total: UInt64 = 1
+
+    override var isFlipped: Bool { true }
+
+    func update(_ items: [ApplicationTrafficSummary], total: UInt64) {
+        self.items = items
+        self.total = max(total, 1)
+        self.needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard !self.items.isEmpty else { return }
+        let columns = 3
+        let rows = 2
+        let gap: CGFloat = 8
+        let width = (self.bounds.width - gap * CGFloat(columns - 1)) / CGFloat(columns)
+        let height = (self.bounds.height - gap * CGFloat(rows - 1)) / CGFloat(rows)
+
+        for (index, item) in self.items.prefix(columns * rows).enumerated() {
+            let column = index % columns
+            let row = index / columns
+            let rect = CGRect(
+                x: CGFloat(column) * (width + gap),
+                y: CGFloat(row) * (height + gap),
+                width: width,
+                height: height
+            )
+            let path = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+            NSColor.controlBackgroundColor.setFill()
+            path.fill()
+
+            let name = item.identity.displayName as NSString
+            name.draw(
+                in: rect.insetBy(dx: 10, dy: 9),
+                withAttributes: [.foregroundColor: NSColor.labelColor, .font: NSFont.systemFont(ofSize: 11, weight: .medium)]
+            )
+            let percent = Int(Double(item.total) / Double(self.total) * 100)
+            let detail = "\(Units(bytes: Int64(item.total)).getReadableMemory()) · \(percent)%" as NSString
+            detail.draw(
+                at: CGPoint(x: rect.minX + 10, y: rect.maxY - 25),
+                withAttributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 10)]
+            )
+        }
+    }
 }
