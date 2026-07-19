@@ -126,6 +126,9 @@ internal final class TrafficTimelineChartView: NSView {
     var points: [ChartPoint] = [] {
         didSet { self.needsDisplay = true }
     }
+    var alerts: [TrafficAlertEvent] = [] {
+        didSet { self.needsDisplay = true }
+    }
     var onSelection: ((DateInterval?) -> Void)?
     var onHover: ((ChartPoint?) -> Void)?
 
@@ -196,7 +199,23 @@ internal final class TrafficTimelineChartView: NSView {
             context.fill(rect)
         }
 
+        self.drawAlertMarkers(in: plot, context: context)
         self.drawHover(in: plot)
+    }
+
+    private func drawAlertMarkers(in plot: CGRect, context: CGContext) {
+        guard let start = self.points.first?.timestamp,
+              let end = self.points.last?.timestamp,
+              end > start else { return }
+        for alert in self.alerts where alert.timestamp >= start && alert.timestamp <= end {
+            let ratio = alert.timestamp.timeIntervalSince(start) / end.timeIntervalSince(start)
+            let x = plot.minX + plot.width * CGFloat(ratio)
+            context.setStrokeColor((alert.severity == .critical ? NSColor.systemRed : NSColor.systemOrange).cgColor)
+            context.setLineWidth(1)
+            context.move(to: CGPoint(x: x, y: plot.minY))
+            context.addLine(to: CGPoint(x: x, y: plot.maxY))
+            context.strokePath()
+        }
     }
 
     override func mouseDown(with event: NSEvent) {

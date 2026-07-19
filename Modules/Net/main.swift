@@ -174,11 +174,19 @@ public class Network: Module {
     
     public init() {
         let analyticsRepository = TrafficHistoryRepository(store: LevelDBTrafficStore())
-        self.analyticsCoordinator = TrafficAnalyticsCoordinator(repository: analyticsRepository)
+        let analyticsNotifier = RuntimeTrafficAlertNotifier()
+        self.analyticsCoordinator = TrafficAnalyticsCoordinator(
+            repository: analyticsRepository,
+            runtimeAlertService: TrafficRuntimeAlertService(
+                repository: analyticsRepository,
+                notifier: analyticsNotifier
+            )
+        )
         self.settingsView = Settings(.network)
         self.popupView = Popup(.network)
         self.portalView = Portal(.network)
         self.notificationsView = Notifications(.network)
+        analyticsNotifier.notifications = self.notificationsView
         self.previewView = Preview(.network, analyticsRepository: analyticsRepository)
         
         super.init(
@@ -387,6 +395,7 @@ public class Network: Module {
         
         self.popupView.connectivityCallback(value)
         self.notificationsView.connectivityCallback(value)
+        _ = self.analyticsCoordinator.updateConnectivity(isOnline: value.status)
         self.previewView.connectivityCallback(value)
         
         self.menuBar.widgets.filter{ $0.isActive }.forEach { (w: SWidget) in

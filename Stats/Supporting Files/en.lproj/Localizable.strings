@@ -601,3 +601,13 @@
 "Apply rule" = "Apply rule";
 "Notify rule is active" = "Notify rule is active";
 "Rule saved; press Apply rule to activate" = "Rule saved; press Apply rule to activate";
+"Alerts" = "Alerts";
+"Traffic alerts" = "Traffic alerts";
+"No traffic alerts" = "No traffic alerts";
+"Clear alerts" = "Clear alerts";
+"Measured" = "Measured";
+"Threshold" = "Threshold";
+"Traffic quota alert" = "Traffic quota alert";
+"Sustained upload alert" = "Sustained upload alert";
+"Traffic spike alert" = "Traffic spike alert";
+"Connectivity alert" = "Connectivity alert";

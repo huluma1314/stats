@@ -103,6 +103,7 @@ public final class TrafficAnalyticsCoordinator {
     private let calendar: Calendar
     private let networkRegistry: NetworkRegistry
     private let runtimeRuleService: TrafficRuntimeRuleService
+    private let runtimeAlertService: TrafficRuntimeAlertService
 
     private var previousCounters: [String: ProcessTrafficCounter] = [:]
     private var currentNetwork = NetworkIdentity(
@@ -131,7 +132,8 @@ public final class TrafficAnalyticsCoordinator {
         maintenanceInterval: TimeInterval = 6 * 60 * 60,
         calendar: Calendar = .current,
         networkRegistry: NetworkRegistry = NetworkRegistry(),
-        runtimeRuleService: TrafficRuntimeRuleService? = nil
+        runtimeRuleService: TrafficRuntimeRuleService? = nil,
+        runtimeAlertService: TrafficRuntimeAlertService? = nil
     ) {
         self.repository = repository
         self.resolver = resolver
@@ -147,6 +149,11 @@ public final class TrafficAnalyticsCoordinator {
             repository: repository,
             clock: clock,
             calendar: calendar
+        )
+        self.runtimeAlertService = runtimeAlertService ?? TrafficRuntimeAlertService(
+            repository: repository,
+            preferencesStore: preferencesStore,
+            clock: clock
         )
     }
 
@@ -182,6 +189,11 @@ public final class TrafficAnalyticsCoordinator {
 
     public func registeredNetworks() -> [RegisteredNetwork] {
         self.queue.sync { self.networkRegistry.all() }
+    }
+
+    @discardableResult
+    public func updateConnectivity(isOnline: Bool, at date: Date? = nil) -> [TrafficAlertEvent] {
+        self.queue.sync { self.runtimeAlertService.recordConnectivity(isOnline: isOnline, at: date) }
     }
 
     public func ingest(counters: [ProcessTrafficCounter]) {
@@ -367,6 +379,7 @@ public final class TrafficAnalyticsCoordinator {
         switch self.repository.ingest(samples) {
         case .success(let batch):
             _ = self.runtimeRuleService.evaluate(batch: batch)
+            _ = self.runtimeAlertService.evaluate(batch: batch)
             self.samplesWritten += batch.samples.count
             self.pendingSamples.removeAll()
             self.consecutivePersistenceFailures = 0

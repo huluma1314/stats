@@ -91,6 +91,7 @@ public struct TrafficAnalyticsSnapshot: Codable, Equatable {
     public let buckets: [TrafficBucket]
     public let ranking: [ApplicationTrafficSummary]
     public let forecast: TrafficForecast?
+    public let alerts: [TrafficAlertEvent]
 
     public init(
         range: TrafficRange,
@@ -101,7 +102,8 @@ public struct TrafficAnalyticsSnapshot: Codable, Equatable {
         total: UInt64,
         buckets: [TrafficBucket],
         ranking: [ApplicationTrafficSummary],
-        forecast: TrafficForecast?
+        forecast: TrafficForecast?,
+        alerts: [TrafficAlertEvent] = []
     ) {
         self.range = range
         self.start = start
@@ -112,6 +114,7 @@ public struct TrafficAnalyticsSnapshot: Codable, Equatable {
         self.buckets = buckets
         self.ranking = ranking
         self.forecast = forecast
+        self.alerts = alerts
     }
 }
 
@@ -251,15 +254,18 @@ public final class TrafficAnalyticsEngine {
     private let repository: TrafficHistoryRepository
     private let calendar: Calendar
     private let retentionPolicy: TrafficRetentionPolicy
+    private let alertStore: TrafficAlertStore
 
     public init(
         repository: TrafficHistoryRepository,
         calendar: Calendar = .current,
-        retentionPolicy: TrafficRetentionPolicy = .standard
+        retentionPolicy: TrafficRetentionPolicy = .standard,
+        alertStore: TrafficAlertStore? = nil
     ) {
         self.repository = repository
         self.calendar = calendar
         self.retentionPolicy = retentionPolicy
+        self.alertStore = alertStore ?? repository.runtimeAlertStore
     }
 
     public func snapshot(for query: TrafficAnalyticsQuery) -> TrafficAnalyticsSnapshot {
@@ -324,7 +330,8 @@ public final class TrafficAnalyticsEngine {
             total: download + upload,
             buckets: buckets,
             ranking: ranking,
-            forecast: forecast
+            forecast: forecast,
+            alerts: self.alertStore.all().filter { $0.timestamp >= interval.start && $0.timestamp <= interval.end }
         )
     }
 

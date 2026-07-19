@@ -174,6 +174,19 @@ class Notifications: NotificationsWrapper {
         }
     }
     
+    internal func trafficAlertCallback(_ events: [TrafficAlertEvent]) {
+        for event in events {
+            let title: String
+            switch event.kind {
+            case .quota: title = localizedString("Traffic quota alert")
+            case .sustainedUpload: title = localizedString("Sustained upload alert")
+            case .baselineSpike: title = localizedString("Traffic spike alert")
+            case .connectivity: title = localizedString("Connectivity alert")
+            }
+            self.newNotification(id: "net.analytics.\(event.deduplicationKey)", title: title, subtitle: event.message)
+        }
+    }
+
     internal func connectivityCallback(_ value: Network_Connectivity) {
         guard self.connectionState else { return }
         
@@ -219,5 +232,15 @@ class Notifications: NotificationsWrapper {
     @objc private func toggleWiFiState(_ sender: NSControl) {
         self.wifiState = controlState(sender)
         Store.shared.set(key: "\(self.module)_notifications_wifi_state", value: self.wifiState)
+    }
+}
+
+internal final class RuntimeTrafficAlertNotifier: TrafficAlertNotifying {
+    weak var notifications: Notifications?
+
+    func deliver(_ events: [TrafficAlertEvent]) {
+        DispatchQueue.main.async { [weak self] in
+            self?.notifications?.trafficAlertCallback(events)
+        }
     }
 }

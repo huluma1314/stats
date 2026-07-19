@@ -948,8 +948,16 @@ final class NetAnalyticsTests: XCTestCase {
             delta: TrafficDelta(download: 0, upload: 100),
             peakBytesPerSecond: 100
         )
+        let earlier = TrafficSample(
+            timestamp: sample.timestamp.addingTimeInterval(-30),
+            application: sample.application,
+            network: sample.network,
+            processID: sample.processID,
+            delta: TrafficDelta(download: 0, upload: 300),
+            peakBytesPerSecond: 300
+        )
         let events = detector.evaluate(
-            recentSamples: [sample],
+            recentSamples: [earlier, sample],
             baselineAverageBytes: 10,
             connectivityOnline: true,
             previousConnectivityOnline: false,
@@ -3212,6 +3220,79 @@ final class NetAnalyticsTests: XCTestCase {
         let service = TrafficRuntimeRuleService(repository: TrafficHistoryRepository(store: InMemoryTrafficStore()), enforcer: RecordingNetworkRuleEnforcer(capability: .available))
         let rule = ApplicationTrafficRule(applicationID: self.identity.id, downloadLimitBytesPerSecond: 10, uploadLimitBytesPerSecond: 20, action: .rateLimit)
         XCTAssertEqual(service.enforcementAction(for: rule)?.kind, .rateLimit(downloadBytesPerSecond: 10, uploadBytesPerSecond: 20))
+    }
+
+
+    func testSustainedUploadRequiresTheConfiguredWallClockDuration() {
+        let network = NetworkIdentity(id: "wifi:home", displayName: "Home", interfaceName: "en0", kind: .wifi)
+        let detector = TrafficAnomalyDetector(sustainedUploadBytesPerSecond: 10, sustainedDurationSeconds: 60)
+        let first = self.sample(at: Date(timeIntervalSince1970: 0), network: network, applicationID: self.identity.id, download: 0, upload: 1_000)
+        let tooShort = self.sample(at: Date(timeIntervalSince1970: 30), network: network, applicationID: self.identity.id, download: 0, upload: 1_000)
+        XCTAssertFalse(detector.evaluate(recentSamples: [first, tooShort], baselineAverageBytes: nil, connectivityOnline: nil, previousConnectivityOnline: nil, disconnectCountLastHour: 0).contains { $0.kind == .sustainedUpload })
+        let complete = self.sample(at: Date(timeIntervalSince1970: 60), network: network, applicationID: self.identity.id, download: 0, upload: 1_000)
+        XCTAssertTrue(detector.evaluate(recentSamples: [first, tooShort, complete], baselineAverageBytes: nil, connectivityOnline: nil, previousConnectivityOnline: nil, disconnectCountLastHour: 0).contains { $0.kind == .sustainedUpload })
+    }
+
+    func testBaselineSpikeUsesPriorComparableBucketsAndRequiresEnoughHistory() {
+        let network = NetworkIdentity(id: "wifi:home", displayName: "Home", interfaceName: "en0", kind: .wifi)
+        let detector = TrafficAnomalyDetector(spikeMultiplier: 3, minimumBaselineBytes: 10)
+        let current = self.sample(at: Date(timeIntervalSince1970: 100), network: network, applicationID: self.identity.id, download: 100, upload: 0)
+        let bucket = TrafficBucket(start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 1), download: 10, upload: 0, peakBytesPerSecond: 10, sampleCount: 1)
+        XCTAssertFalse(detector.evaluate(recentSamples: [current], priorComparableBuckets: Array(repeating: bucket, count: 6), connectivityOnline: nil, previousConnectivityOnline: nil, disconnectCountLastHour: 0).contains { $0.kind == .baselineSpike })
+        XCTAssertTrue(detector.evaluate(recentSamples: [current], priorComparableBuckets: Array(repeating: bucket, count: 7), connectivityOnline: nil, previousConnectivityOnline: nil, disconnectCountLastHour: 0).contains { $0.kind == .baselineSpike })
+    }
+
+    func testConnectivityRuntimeEmitsDisconnectRecoveryAndInstabilityEvents() {
+        let detector = TrafficAnomalyDetector()
+        XCTAssertTrue(detector.evaluate(recentSamples: [], baselineAverageBytes: nil, connectivityOnline: false, previousConnectivityOnline: true, disconnectCountLastHour: 1).contains { $0.message == "Network disconnected" })
+        XCTAssertTrue(detector.evaluate(recentSamples: [], baselineAverageBytes: nil, connectivityOnline: true, previousConnectivityOnline: false, disconnectCountLastHour: 1).contains { $0.message == "Network recovered" })
+        XCTAssertTrue(detector.evaluate(recentSamples: [], baselineAverageBytes: nil, connectivityOnline: false, previousConnectivityOnline: true, disconnectCountLastHour: 3).contains { $0.message == "Network is unstable" })
+    }
+
+    func testAlertCooldownDeduplicatesAcrossCoordinatorBatchesAndRestart() {
+        let store = InMemoryTrafficStore()
+        let first = TrafficAlertStore(store: store)
+        let now = Date(timeIntervalSince1970: 100)
+        first.setCooldown(for: "same", until: now.addingTimeInterval(100))
+        let restarted = TrafficAlertStore(store: store)
+        XCTAssertTrue(restarted.hasCooldown(for: "same", now: now))
+        XCTAssertFalse(restarted.hasCooldown(for: "same", now: now.addingTimeInterval(101)))
+    }
+
+    func testAlertStorePersistsTimelineMetadataAndPrunesDeterministically() {
+        let store = InMemoryTrafficStore()
+        let alerts = TrafficAlertStore(store: store)
+        let base = Date(timeIntervalSince1970: 0)
+        alerts.append((0...2_000).map { index in
+            TrafficAlertEvent(id: "\(index)", kind: .quota, timestamp: base.addingTimeInterval(TimeInterval(index)), message: "quota", severity: .critical, measuredValue: 10, thresholdValue: 5, deduplicationKey: "quota-\(index)")
+        })
+        XCTAssertEqual(alerts.all().count, 2_000)
+        XCTAssertEqual(alerts.all().first?.severity, .critical)
+        XCTAssertEqual(alerts.all().first?.measuredValue, 10)
+    }
+
+    func testTimelineSnapshotIncludesVisibleAlertMarkersOnly() {
+        let store = InMemoryTrafficStore()
+        let alertStore = TrafficAlertStore(store: store)
+        let repository = TrafficHistoryRepository(store: store, alertStore: alertStore)
+        let event = TrafficAlertEvent(kind: .connectivity, timestamp: Date(timeIntervalSince1970: 50), message: "disconnect")
+        alertStore.append([event, TrafficAlertEvent(kind: .connectivity, timestamp: Date(timeIntervalSince1970: 10_000), message: "outside")])
+        let snapshot = TrafficAnalyticsEngine(repository: repository).snapshot(for: TrafficAnalyticsQuery(range: .today, now: Date(timeIntervalSince1970: 100)))
+        XCTAssertEqual(snapshot.alerts, [event])
+    }
+
+    func testDisabledAlertPreferencesSkipEvaluationAndNotification() {
+        let suite = "net-alert-disabled-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let preferences = TrafficAnalyticsPreferencesStore(defaults: defaults)
+        var value = preferences.preferences()
+        value.anomalyDetectionEnabled = false
+        preferences.save(value)
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let service = TrafficRuntimeAlertService(repository: repository, preferencesStore: preferences)
+        let sample = self.sample(at: Date(timeIntervalSince1970: 60), network: NetworkIdentity(id: "wifi:home", displayName: "Home", interfaceName: "en0", kind: .wifi), applicationID: self.identity.id, download: 0, upload: 10_000_000)
+        XCTAssertTrue(service.evaluate(batch: CommittedTrafficBatch(samples: [sample])).isEmpty)
+        XCTAssertTrue(repository.trafficAlerts().isEmpty)
     }
 
     private func waitUntil(timeout: TimeInterval = 1, condition: () -> Bool) -> Bool {

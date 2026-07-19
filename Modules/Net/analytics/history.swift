@@ -213,12 +213,12 @@ public final class TrafficHistoryRepository {
     public init(
         store: TrafficKeyValueStoring,
         queue: DispatchQueue = DispatchQueue(label: "eu.exelban.Stats.Net.analytics.history"),
-        alertStore: TrafficAlertStore = TrafficAlertStore(),
+        alertStore: TrafficAlertStore? = nil,
         ruleStore: TrafficRuleStore = TrafficRuleStore()
     ) {
         self.store = store
         self.queue = queue
-        self.alertStore = alertStore
+        self.alertStore = alertStore ?? TrafficAlertStore(store: store)
         self.ruleStore = ruleStore
         self.queue.setSpecific(key: self.queueKey, value: 1)
         self.encoder.dateEncodingStrategy = .iso8601
@@ -291,20 +291,32 @@ public final class TrafficHistoryRepository {
 
     public func deleteTrafficHistory() throws {
         try self.queue.sync {
-            let keys = self.store.keys(prefix: Self.legacyTrafficKeyPrefix)
-                + self.store.keys(prefix: Self.trafficKeyPrefix)
-            try self.writeAtomically(puts: [], deletes: Array(Set(keys)))
+            try self.writeAtomically(puts: [], deletes: self.trafficKeysLocked())
         }
     }
 
     public func clearAnalyticsData() throws {
         try self.queue.sync {
-            let keys = self.store.keys(prefix: Self.legacyTrafficKeyPrefix)
-                + self.store.keys(prefix: Self.trafficKeyPrefix)
-            try self.writeAtomically(puts: [], deletes: Array(Set(keys)))
+            try self.writeAtomically(puts: [], deletes: self.trafficKeysLocked())
             self.alertStore.clear()
             self.ruleStore.clearRuntimeState()
         }
+    }
+
+    public func trafficAlerts() -> [TrafficAlertEvent] {
+        self.queue.sync { self.alertStore.all() }
+    }
+
+    public var runtimeAlertStore: TrafficAlertStore { self.alertStore }
+
+    private func trafficKeysLocked() -> [String] {
+        let current = TrafficAggregationLevel.allCases.flatMap {
+            self.store.keys(prefix: "\(Self.keyPrefix)|\($0.rawValue)|")
+        }
+        let legacy = TrafficAggregationLevel.allCases.flatMap {
+            self.store.keys(prefix: "\(Self.legacyKeyPrefix)|\($0.rawValue)|")
+        }
+        return Array(Set(current + legacy))
     }
 
     public func deleteAll() {

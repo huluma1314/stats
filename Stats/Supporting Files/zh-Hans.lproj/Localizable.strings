@@ -601,3 +601,13 @@
 "Apply rule" = "应用规则";
 "Notify rule is active" = "通知规则已启用";
 "Rule saved; press Apply rule to activate" = "规则已保存；点击“应用规则”后才会生效";
+"Alerts" = "告警";
+"Traffic alerts" = "流量告警";
+"No traffic alerts" = "暂无流量告警";
+"Clear alerts" = "清空告警";
+"Measured" = "测量值";
+"Threshold" = "阈值";
+"Traffic quota alert" = "流量配额告警";
+"Sustained upload alert" = "持续上传告警";
+"Traffic spike alert" = "流量突增告警";
+"Connectivity alert" = "网络连通性告警";

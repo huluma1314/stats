@@ -23,6 +23,7 @@ internal final class TrafficAnalysisView: NSView {
     private let exportControl = NSPopUpButton()
     private let moreControl = NSPopUpButton()
     private let refreshButton = NSButton()
+    private let alertButton = NSButton(title: localizedString("Alerts"), target: nil, action: nil)
     private let dateButton = NSButton()
     private let datePopover = NSPopover()
     private let downloadLabel = NSTextField(labelWithString: "—")
@@ -144,6 +145,11 @@ internal final class TrafficAnalysisView: NSView {
         self.dateButton.target = self
         self.dateButton.action = #selector(self.showCustomRange)
 
+        self.alertButton.identifier = NSUserInterfaceItemIdentifier("traffic-alert-list")
+        self.alertButton.bezelStyle = .texturedRounded
+        self.alertButton.target = self
+        self.alertButton.action = #selector(self.showAlerts)
+
         self.refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         self.refreshButton.bezelStyle = .texturedRounded
         self.refreshButton.target = self
@@ -160,6 +166,7 @@ internal final class TrafficAnalysisView: NSView {
             self.refreshControl,
             self.exportControl,
             self.moreControl,
+            self.alertButton,
             self.refreshButton
         ])
         optionsRow.orientation = .horizontal
@@ -363,6 +370,29 @@ internal final class TrafficAnalysisView: NSView {
         self.datePopover.show(relativeTo: self.dateButton.bounds, of: self.dateButton, preferredEdge: .maxY)
     }
 
+    @objc private func showAlerts() {
+        let events = self.repository.trafficAlerts()
+        let alert = NSAlert()
+        alert.messageText = localizedString("Traffic alerts")
+        if events.isEmpty {
+            alert.informativeText = localizedString("No traffic alerts")
+        } else {
+            alert.informativeText = events.prefix(20).map { event in
+                let measured = event.measuredValue.map { " · \(localizedString("Measured")): \($0)" } ?? ""
+                let threshold = event.thresholdValue.map { " · \(localizedString("Threshold")): \($0)" } ?? ""
+                return "[\(event.severity.rawValue.uppercased())] \(event.message)\(measured)\(threshold)"
+            }.joined(separator: "\n")
+            alert.addButton(withTitle: localizedString("Clear alerts"))
+        }
+        alert.addButton(withTitle: localizedString("Close"))
+        if !events.isEmpty, alert.runModal() == .alertFirstButtonReturn {
+            self.repository.runtimeAlertStore.clear()
+            self.reload()
+        } else if events.isEmpty {
+            alert.runModal()
+        }
+    }
+
     @objc private func refreshClicked() {
         self.reload()
     }
@@ -383,6 +413,7 @@ internal final class TrafficAnalysisView: NSView {
         self.totalLabel.stringValue = Units(bytes: Int64(snapshot.total)).getReadableMemory()
         self.fullRanking = snapshot.ranking
         self.lineChart.points = TrafficChartGeometry.points(from: snapshot.buckets)
+        self.lineChart.alerts = snapshot.alerts
         self.heatmap.cells = TrafficChartGeometry.heatmapCells(from: snapshot.buckets)
         self.table.update(snapshot.ranking)
         self.lineChart.isHidden = self.selection.chartMode != .line
