@@ -37,6 +37,11 @@ while the Bytetally capability is available in the same Network preview.
 
 ## Product Structure
 
+> **Presentation correction (July 19, 2026):** The embedded-only structure below is
+> superseded by `2026-07-19-network-analytics-workspace-redesign.md`. Network
+> Analytics is delivered in a dedicated full-width workspace; the existing settings
+> page remains configuration-only.
+
 The existing Network item in the Stats settings window remains the only entry
 point. Its preview becomes a three-page segmented interface:
 
