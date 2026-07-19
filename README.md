@@ -38,6 +38,20 @@ Stats is an application that allows you to monitor your macOS system.
  - Bluetooth devices
  - Multiple time zone clock
 
+### Local network analytics
+
+The Network module includes local-first traffic analytics in addition to the menu-bar rate display:
+
+- monthly usage overview with quota remainder, forecast, recent trend, top applications, and anomaly status;
+- historical line and heatmap views with preset or custom ranges, concrete network filters, interval selection, application/process grouping, search, sorting, alerts, and CSV/JSON export;
+- live per-application download, upload, and total rates over 60-second, 5-minute, and 15-minute windows;
+- stable observed-network identities, editable aliases, a global default plan, and independent per-network billing plans;
+- persisted quota thresholds, anomaly/connectivity alerts, application rules, and configurable retention (24-hour second data with 7/60/730-day minute/hour/day defaults, plus permanent month/year summaries).
+
+Traffic history, network aliases/plans, rules, and alerts are stored locally. The analytics reset action clears analytics-owned history and alert state without pretending that external network state was changed. Exports use a versioned schema and include the exact visible interval, network metadata, application/process rows, route metadata, and visible alert markers.
+
+Real application blocking and rate limiting require an Apple Network Extension entitlement. Unsigned or otherwise unentitled builds can save desired block/rate-limit rules for a future capable build, but those rules remain clearly marked as saved and inactive and cannot be applied. Notify-only quota rules continue to work. Stats does not claim success, alter system network configuration, or substitute `pf`/privileged shell rules when the entitlement is unavailable.
+
 ## FAQs
 
 ### How do you change the order of the menu bar icons?
