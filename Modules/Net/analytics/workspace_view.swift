@@ -157,7 +157,6 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
             button.isBordered = true
             button.bezelStyle = .texturedRounded
             button.tag = NetworkAnalyticsWorkspacePage.allCases.firstIndex(of: page) ?? 0
-            button.widthAnchor.constraint(equalToConstant: 38).isActive = true
             self.pageButtons[page] = button
             stack.addArrangedSubview(button)
         }
