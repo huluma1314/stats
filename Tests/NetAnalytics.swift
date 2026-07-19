@@ -1060,6 +1060,50 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(focused.activeApplications.map(\.identity.id), ["app.b"])
     }
 
+    func testLiveWorkspaceFitsMinimumWindowWithoutConstraintConflict() throws {
+        let controller = self.makeWorkspaceController()
+        controller.select(.live)
+        let window = controller.show()
+        defer { window.close() }
+        window.setContentSize(NetworkAnalyticsWindowController.minimumContentSize)
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let workspace = try XCTUnwrap(window.contentView as? NetworkAnalyticsWorkspaceView)
+        let live = try XCTUnwrap(self.descendants(of: workspace).compactMap { $0 as? LiveTrafficView }.first)
+        XCTAssertLessThanOrEqual(live.frame.height, 424.5)
+        XCTAssertFalse(live.hasAmbiguousLayout)
+    }
+
+    func testLiveProcessRowsFlattenAndSortCurrentFrameProcesses() {
+        let owner = ApplicationIdentity(id: "owner", displayName: "Owner", bundleIdentifier: "owner", executablePath: nil)
+        let child = ApplicationIdentity(id: "child", displayName: "Child", bundleIdentifier: nil, executablePath: "/tmp/child")
+        let summary = ApplicationTrafficSummary(
+            identity: owner, download: 110, upload: 55, peakBytesPerSecond: 165,
+            processes: [
+                ProcessTrafficSummary(processID: 1, processName: "slow", download: 10, upload: 5, peakBytesPerSecond: 15),
+                ProcessTrafficSummary(processID: 2, processName: "fast", download: 100, upload: 50, peakBytesPerSecond: 150, identity: child)
+            ]
+        )
+
+        let rows = LiveTrafficProcessRow.flatten([summary])
+        XCTAssertEqual(rows.map(\.process.processName), ["fast", "slow"])
+        XCTAssertEqual(rows.first?.owner, owner)
+        XCTAssertEqual(rows.first?.iconIdentity, child)
+    }
+
+    func testLiveChartScaleHoldsAcrossLowerConsecutiveRefreshes() {
+        let chart = LiveTrafficChartView()
+        chart.points = [LiveTrafficPoint(timestamp: Date(), download: 1_000, upload: 500)]
+        let highScale = chart.displayMaximum
+
+        for _ in 0..<3 {
+            chart.points = [LiveTrafficPoint(timestamp: Date(), download: 20, upload: 10)]
+        }
+
+        XCTAssertEqual(chart.displayMaximum, highScale)
+        XCTAssertGreaterThanOrEqual(chart.displayMaximum, 1_000)
+    }
+
     func testLiveTrafficViewExposesWorkspaceHierarchy() {
         let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
         let view = LiveTrafficView(engine: TrafficAnalyticsEngine(repository: repository))

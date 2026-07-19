@@ -715,9 +715,7 @@ internal final class LiveTrafficView: NSView {
         self.uploadLabel.stringValue = self.rate(snapshot.uploadBytesPerSecond)
         self.totalLabel.stringValue = self.rate(snapshot.totalBytesPerSecond)
         self.chart.points = snapshot.points
-        self.apps.items = snapshot.activeApplications.sorted {
-            $0.total == $1.total ? $0.identity.displayName < $1.identity.displayName : $0.total > $1.total
-        }
+        self.apps.items = LiveTrafficProcessRow.flatten(snapshot.activeApplications)
         self.updateFocusControl(snapshot.applications)
     }
 
@@ -727,11 +725,24 @@ internal final class LiveTrafficView: NSView {
         stack.alignment = .width
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
-        self.addSubview(stack)
-        self.heightAnchor.constraint(greaterThanOrEqualToConstant: 560).isActive = true
+        let scrollView = NSScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.documentView = stack
+        self.addSubview(scrollView)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: self.leadingAnchor), stack.trailingAnchor.constraint(equalTo: self.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: self.topAnchor), stack.bottomAnchor.constraint(equalTo: self.bottomAnchor)
+            scrollView.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: self.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            stack.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            stack.heightAnchor.constraint(greaterThanOrEqualToConstant: 560)
         ])
 
         self.focusControl.addItem(withTitle: localizedString("All applications"))
@@ -973,8 +984,29 @@ internal final class TrafficCustomRangePopoverView: NSView {
 }
 
 internal final class LiveTrafficChartView: NSView {
+    private(set) var displayMaximum: UInt64 = 1
+    private var lowerScaleRefreshCount = 0
     var points: [LiveTrafficPoint] = [] {
-        didSet { self.needsDisplay = true }
+        didSet {
+            self.updateDisplayMaximum()
+            self.needsDisplay = true
+        }
+    }
+
+    private func updateDisplayMaximum() {
+        let observed = max(self.points.map { max($0.download, $0.upload) }.max() ?? 1, 1)
+        if observed >= self.displayMaximum {
+            self.displayMaximum = observed
+            self.lowerScaleRefreshCount = 0
+        } else if observed * 2 < self.displayMaximum {
+            self.lowerScaleRefreshCount += 1
+            if self.lowerScaleRefreshCount >= 5 {
+                self.displayMaximum = max(observed, 1)
+                self.lowerScaleRefreshCount = 0
+            }
+        } else {
+            self.lowerScaleRefreshCount = 0
+        }
     }
 
     override var isFlipped: Bool { true }
@@ -992,7 +1024,7 @@ internal final class LiveTrafficChartView: NSView {
         axis.stroke()
         guard !self.points.isEmpty else { return }
 
-        let maximum = max(self.points.map { max($0.download, $0.upload) }.max() ?? 1, 1)
+        let maximum = self.displayMaximum
         let download = NSBezierPath()
         let upload = NSBezierPath()
         for (index, point) in self.points.enumerated() {
@@ -1016,9 +1048,29 @@ internal final class LiveTrafficChartView: NSView {
     }
 }
 
+internal struct LiveTrafficProcessRow: Equatable {
+    let owner: ApplicationIdentity
+    let process: ProcessTrafficSummary
+    let routeContexts: [TrafficRouteContext]
+
+    var total: UInt64 { self.process.download + self.process.upload }
+    var iconIdentity: ApplicationIdentity { self.process.identity ?? self.owner }
+
+    static func flatten(_ applications: [ApplicationTrafficSummary]) -> [LiveTrafficProcessRow] {
+        applications.flatMap { application in
+            application.processes.map {
+                LiveTrafficProcessRow(owner: application.identity, process: $0, routeContexts: application.routeContexts)
+            }
+        }.sorted {
+            if $0.total == $1.total { return $0.process.processName.localizedCaseInsensitiveCompare($1.process.processName) == .orderedAscending }
+            return $0.total > $1.total
+        }
+    }
+}
+
 internal final class LiveTrafficAppsView: NSView {
     private let iconResolver: ApplicationIconResolving
-    var items: [ApplicationTrafficSummary] = [] {
+    var items: [LiveTrafficProcessRow] = [] {
         didSet { self.needsDisplay = true }
     }
 
@@ -1048,19 +1100,19 @@ internal final class LiveTrafficAppsView: NSView {
             let rect = CGRect(x: 0, y: CGFloat(index) * (rowHeight + 4), width: self.bounds.width, height: rowHeight)
             NSColor.controlBackgroundColor.setFill()
             NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
-            let identity = item.processes.first?.identity ?? item.identity
-            self.iconResolver.icon(for: identity).draw(
+            self.iconResolver.icon(for: item.iconIdentity).draw(
                 in: CGRect(x: rect.minX + 9, y: rect.minY + 8, width: 16, height: 16)
             )
             let route = item.routeContexts.first.map {
                 localizedString(TrafficRouteClassifier.label(for: $0, systemProxyConfigured: $0.systemProxyConfigured))
             }
-            let name = route.map { "\(item.identity.displayName)  ·  \($0)" } ?? item.identity.displayName
+            let ownerAndProcess = "\(item.owner.displayName) › \(item.process.processName)"
+            let name = route.map { "\(ownerAndProcess)  ·  \($0)" } ?? ownerAndProcess
             (name as NSString).draw(
                 at: CGPoint(x: 31, y: rect.minY + 8),
                 withAttributes: [.foregroundColor: NSColor.labelColor, .font: NSFont.systemFont(ofSize: 11, weight: .medium)]
             )
-            let value = "↓ \(self.rate(item.download))   ↑ \(self.rate(item.upload))" as NSString
+            let value = "↓ \(self.rate(item.process.download))   ↑ \(self.rate(item.process.upload))" as NSString
             let size = value.size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)])
             value.draw(
                 at: CGPoint(x: rect.maxX - size.width - 10, y: rect.minY + 8),
