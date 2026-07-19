@@ -174,6 +174,7 @@ public struct TrafficHistoryQuery: Equatable {
     public let level: TrafficAggregationLevel
     public let start: Date
     public let end: Date
+    public let endExclusive: Bool
     public let networkID: String?
     public let applicationID: String?
 
@@ -181,12 +182,14 @@ public struct TrafficHistoryQuery: Equatable {
         level: TrafficAggregationLevel,
         start: Date,
         end: Date,
+        endExclusive: Bool = false,
         networkID: String? = nil,
         applicationID: String? = nil
     ) {
         self.level = level
         self.start = start
         self.end = end
+        self.endExclusive = endExclusive
         self.networkID = networkID
         self.applicationID = applicationID
     }
@@ -367,6 +370,61 @@ public final class TrafficHistoryRepository {
         }
     }
 
+    public func replaceAtomically(
+        records: [StoredTrafficRecord],
+        deleting sourceKeys: [String]
+    ) throws {
+        try self.queue.sync {
+            try self.replaceAtomicallyLocked(records: records, deleting: sourceKeys)
+        }
+    }
+
+    public func storeAtomically(records: [StoredTrafficRecord]) throws {
+        try self.queue.sync {
+            var recordsByKey: [String: StoredTrafficRecord] = [:]
+            for record in records {
+                let sample = record.sample
+                let key = Self.makeKey(
+                    level: record.level,
+                    timestamp: sample.timestamp,
+                    networkID: sample.network.id,
+                    applicationID: sample.application.id,
+                    processDiscriminator: record.level == .second ? sample.processDiscriminator : nil
+                )
+                recordsByKey[key] = recordsByKey[key].map {
+                    TrafficAggregation.merge($0, record, level: record.level)
+                } ?? record
+            }
+            let puts = try recordsByKey.keys.sorted().map { key in
+                (key, try self.encode(recordsByKey[key]!))
+            }
+            try self.writeAtomically(puts: puts, deletes: [])
+        }
+    }
+
+    public func recordsWithKeys(_ query: TrafficHistoryQuery) -> [(key: String, record: StoredTrafficRecord)] {
+        self.queue.sync {
+            [TrafficHistorySchema.v1, .v2].flatMap { schema in
+                self.keysLocked(for: query, schema: schema).compactMap { key in
+                    guard let record = self.decodeRecord(key: key, schema: schema, level: query.level) else { return nil }
+                    let sample = record.sample
+                    guard sample.timestamp >= query.start,
+                          query.endExclusive ? sample.timestamp < query.end : sample.timestamp <= query.end else {
+                        return nil
+                    }
+                    if let networkID = query.networkID, sample.network.id != networkID { return nil }
+                    if let applicationID = query.applicationID, sample.application.id != applicationID { return nil }
+                    return (key, record)
+                }
+            }.sorted { lhs, rhs in
+                if lhs.record.sample.timestamp == rhs.record.sample.timestamp {
+                    return lhs.key < rhs.key
+                }
+                return lhs.record.sample.timestamp < rhs.record.sample.timestamp
+            }
+        }
+    }
+
     public static func makeKey(
         level: TrafficAggregationLevel,
         timestamp: Date,
@@ -405,7 +463,8 @@ public final class TrafficHistoryRepository {
                     let sample = record.sample
                     if let networkID = query.networkID, sample.network.id != networkID { return false }
                     if let applicationID = query.applicationID, sample.application.id != applicationID { return false }
-                    return sample.timestamp >= query.start && sample.timestamp <= query.end
+                    return sample.timestamp >= query.start
+                        && (query.endExclusive ? sample.timestamp < query.end : sample.timestamp <= query.end)
                 }
         }
     }
@@ -421,7 +480,8 @@ public final class TrafficHistoryRepository {
         let startSeconds = Int64(query.start.timeIntervalSince1970)
         let endSeconds = Int64(query.end.timeIntervalSince1970)
         let startBound = "\(prefix)\(String(format: "%020lld", startSeconds))|"
-        let endBound = "\(prefix)\(String(format: "%020lld", endSeconds + 1))|"
+        let endBoundSeconds = query.endExclusive ? endSeconds : endSeconds + 1
+        let endBound = "\(prefix)\(String(format: "%020lld", endBoundSeconds))|"
         return self.store.keys(prefix: prefix).filter { $0 >= startBound && $0 < endBound }
     }
 
@@ -431,7 +491,8 @@ public final class TrafficHistoryRepository {
     ) throws {
         dispatchPrecondition(condition: .onQueue(self.queue))
         let sourceKeySet = Set(sourceKeys)
-        let puts = try records.map { record in
+        var contributionsByKey: [String: StoredTrafficRecord] = [:]
+        for record in records {
             let sample = record.sample
             let key = Self.makeKey(
                 level: record.level,
@@ -440,12 +501,18 @@ public final class TrafficHistoryRepository {
                 applicationID: sample.application.id,
                 processDiscriminator: record.level == .second ? sample.processDiscriminator : nil
             )
-            let destinationRecord = sourceKeySet.contains(key)
-                ? nil
-                : self.decodeRecord(key: key, schema: .v2, level: record.level)
-            let mergedRecord = destinationRecord.map {
+            contributionsByKey[key] = contributionsByKey[key].map {
                 TrafficAggregation.merge($0, record, level: record.level)
             } ?? record
+        }
+        let puts = try contributionsByKey.keys.sorted().map { key in
+            let contribution = contributionsByKey[key]!
+            let destinationRecord = sourceKeySet.contains(key)
+                ? nil
+                : self.decodeRecord(key: key, schema: .v2, level: contribution.level)
+            let mergedRecord = destinationRecord.map {
+                TrafficAggregation.merge($0, contribution, level: contribution.level)
+            } ?? contribution
             return (key, try self.encode(mergedRecord))
         }
         try self.writeAtomically(puts: puts, deletes: sourceKeys)

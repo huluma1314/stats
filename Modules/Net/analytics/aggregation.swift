@@ -23,24 +23,39 @@ public enum HeatmapBucketKind: String, Codable, Equatable {
 }
 
 public struct TrafficRetentionPolicy: Equatable {
-    public let secondRetention: TimeInterval
-    public let minuteRetention: TimeInterval
-    public let hourRetention: TimeInterval
+    public static let secondRetention: TimeInterval = 24 * 60 * 60
+
+    public let minuteRetentionDays: Int
+    public let hourRetentionDays: Int
+    public let dayRetentionDays: Int
+    public let compactionBatchSize: Int
 
     public static let standard = TrafficRetentionPolicy(
-        secondRetention: 24 * 60 * 60,
-        minuteRetention: 30 * 24 * 60 * 60,
-        hourRetention: 2 * 365 * 24 * 60 * 60
+        minuteRetentionDays: 7,
+        hourRetentionDays: 60,
+        dayRetentionDays: 730,
+        compactionBatchSize: 2_000
     )
 
     public init(
-        secondRetention: TimeInterval,
-        minuteRetention: TimeInterval,
-        hourRetention: TimeInterval
+        minuteRetentionDays: Int,
+        hourRetentionDays: Int,
+        dayRetentionDays: Int,
+        compactionBatchSize: Int = 2_000
     ) {
-        self.secondRetention = secondRetention
-        self.minuteRetention = minuteRetention
-        self.hourRetention = hourRetention
+        self.minuteRetentionDays = max(1, minuteRetentionDays)
+        self.hourRetentionDays = max(1, hourRetentionDays)
+        self.dayRetentionDays = max(1, dayRetentionDays)
+        self.compactionBatchSize = max(1, compactionBatchSize)
+    }
+
+    public init(preferences: TrafficAnalyticsPreferences, compactionBatchSize: Int = 2_000) {
+        self.init(
+            minuteRetentionDays: preferences.minuteRetentionDays,
+            hourRetentionDays: preferences.hourRetentionDays,
+            dayRetentionDays: preferences.dayRetentionDays,
+            compactionBatchSize: compactionBatchSize
+        )
     }
 }
 
@@ -150,48 +165,184 @@ public enum TrafficAggregation {
         policy: TrafficRetentionPolicy = .standard,
         calendar: Calendar = .current
     ) throws {
-        let secondCutoff = now.addingTimeInterval(-policy.secondRetention)
-        let minuteCutoff = now.addingTimeInterval(-policy.minuteRetention)
-        let hourCutoff = now.addingTimeInterval(-policy.hourRetention)
+        let secondCutoff = now.addingTimeInterval(-TrafficRetentionPolicy.secondRetention)
+        let minuteCutoff = calendar.date(byAdding: .day, value: -policy.minuteRetentionDays, to: now)
+            ?? now.addingTimeInterval(-TimeInterval(policy.minuteRetentionDays) * 86_400)
+        let hourCutoff = calendar.date(byAdding: .day, value: -policy.hourRetentionDays, to: now)
+            ?? now.addingTimeInterval(-TimeInterval(policy.hourRetentionDays) * 86_400)
+        let dayCutoff = calendar.date(byAdding: .day, value: -policy.dayRetentionDays, to: now)
+            ?? now.addingTimeInterval(-TimeInterval(policy.dayRetentionDays) * 86_400)
 
-        let secondQuery = TrafficHistoryQuery(
-            level: .second,
-            start: Date(timeIntervalSince1970: 0),
-            end: secondCutoff
+        try self.compactLevel(
+            repository: repository,
+            source: .second,
+            destination: .minute,
+            cutoff: secondCutoff,
+            batchSize: policy.compactionBatchSize,
+            calendar: calendar,
+            deleteSources: true
         )
-        let oldSeconds = repository.fetchRecords(secondQuery)
-        if !oldSeconds.isEmpty {
-            try repository.replaceAtomically(
-                records: self.aggregate(records: oldSeconds, level: .minute, calendar: calendar),
-                deleting: secondQuery
+        try self.compactLevel(
+            repository: repository,
+            source: .minute,
+            destination: .hour,
+            cutoff: minuteCutoff,
+            batchSize: policy.compactionBatchSize,
+            calendar: calendar,
+            deleteSources: true
+        )
+        try self.compactLevel(
+            repository: repository,
+            source: .hour,
+            destination: .day,
+            cutoff: hourCutoff,
+            batchSize: policy.compactionBatchSize,
+            calendar: calendar,
+            deleteSources: true
+        )
+        try self.compactLevel(
+            repository: repository,
+            source: .day,
+            destination: .month,
+            cutoff: dayCutoff,
+            batchSize: policy.compactionBatchSize,
+            calendar: calendar,
+            deleteSources: true
+        )
+        try self.buildCompletedYears(
+            repository: repository,
+            now: now,
+            batchSize: policy.compactionBatchSize,
+            calendar: calendar
+        )
+    }
+
+    private struct CompactionBucketKey: Hashable {
+        let start: Date
+        let networkID: String
+        let applicationID: String
+    }
+
+    private static func compactLevel(
+        repository: TrafficHistoryRepository,
+        source: TrafficAggregationLevel,
+        destination: TrafficAggregationLevel,
+        cutoff: Date,
+        batchSize: Int,
+        calendar: Calendar,
+        deleteSources: Bool
+    ) throws {
+        let sourceRows = repository.recordsWithKeys(TrafficHistoryQuery(
+            level: source,
+            start: Date.distantPast,
+            end: cutoff,
+            endExclusive: true
+        ))
+        guard !sourceRows.isEmpty else { return }
+
+        let groupedByTime = Dictionary(grouping: sourceRows) { row in
+            self.bucketInterval(for: row.record.sample.timestamp, level: destination, calendar: calendar).start
+        }
+        let eligible = groupedByTime.compactMap { start, rows -> (Date, [(key: String, record: StoredTrafficRecord)])? in
+            let end = self.bucketInterval(for: start, level: destination, calendar: calendar).end
+            return end <= cutoff ? (start, rows) : nil
+        }.sorted { $0.0 < $1.0 }
+
+        var admittedCount = 0
+        for (_, rows) in eligible {
+            guard admittedCount < batchSize else { break }
+            let groupedRecords = Dictionary(grouping: rows, by: { row -> CompactionBucketKey in
+                let sample = row.record.sample
+                return CompactionBucketKey(
+                    start: self.bucketInterval(for: sample.timestamp, level: destination, calendar: calendar).start,
+                    networkID: sample.network.id,
+                    applicationID: sample.application.id
+                )
+            })
+            let aggregates = groupedRecords.values.flatMap { group in
+                self.aggregate(records: group.map(\.record), level: destination, calendar: calendar)
+            }
+            let deletes = deleteSources ? rows.map(\.key) : []
+            try repository.replaceAtomically(records: aggregates, deleting: deletes)
+            admittedCount += rows.count
+        }
+    }
+
+    private static func buildCompletedYears(
+        repository: TrafficHistoryRepository,
+        now: Date,
+        batchSize: Int,
+        calendar: Calendar
+    ) throws {
+        let currentYearStart = self.bucketInterval(for: now, level: .year, calendar: calendar).start
+        let months = repository.recordsWithKeys(TrafficHistoryQuery(
+            level: .month,
+            start: Date.distantPast,
+            end: currentYearStart,
+            endExclusive: true
+        ))
+        guard !months.isEmpty else { return }
+
+        let existingYears = repository.fetchRecords(TrafficHistoryQuery(
+            level: .year,
+            start: Date.distantPast,
+            end: currentYearStart,
+            endExclusive: true
+        ))
+        let existingKeys = Set(existingYears.map {
+            CompactionBucketKey(
+                start: $0.sample.timestamp,
+                networkID: $0.sample.network.id,
+                applicationID: $0.sample.application.id
+            )
+        })
+        let grouped = Dictionary(grouping: months) { row -> CompactionBucketKey in
+            let sample = row.record.sample
+            return CompactionBucketKey(
+                start: self.bucketInterval(for: sample.timestamp, level: .year, calendar: calendar).start,
+                networkID: sample.network.id,
+                applicationID: sample.application.id
             )
         }
-
-        let minuteQuery = TrafficHistoryQuery(
-            level: .minute,
-            start: Date(timeIntervalSince1970: 0),
-            end: minuteCutoff
-        )
-        let oldMinutes = repository.fetchRecords(minuteQuery)
-        if !oldMinutes.isEmpty {
-            try repository.replaceAtomically(
-                records: self.aggregate(records: oldMinutes, level: .hour, calendar: calendar),
-                deleting: minuteQuery
-            )
+        let groupedByYear = Dictionary(grouping: grouped, by: { $0.key.start })
+        var admittedCount = 0
+        for (yearStart, yearGroups) in groupedByYear.sorted(by: { $0.key < $1.key }) {
+            guard admittedCount < batchSize else { break }
+            let end = self.bucketInterval(for: yearStart, level: .year, calendar: calendar).end
+            guard end <= currentYearStart else { continue }
+            let newGroups = yearGroups.filter { !existingKeys.contains($0.key) }
+            guard !newGroups.isEmpty else { continue }
+            let aggregate = newGroups.flatMap { group in
+                self.aggregate(records: group.value.map(\.record), level: .year, calendar: calendar)
+            }
+            try repository.storeAtomically(records: aggregate)
+            admittedCount += newGroups.reduce(0) { $0 + $1.value.count }
         }
+    }
 
-        let hourQuery = TrafficHistoryQuery(
-            level: .hour,
-            start: Date(timeIntervalSince1970: 0),
-            end: hourCutoff
-        )
-        let oldHours = repository.fetchRecords(hourQuery)
-        if !oldHours.isEmpty {
-            try repository.replaceAtomically(
-                records: self.aggregate(records: oldHours, level: .month, calendar: calendar),
-                deleting: hourQuery
-            )
+    public static func bucketInterval(
+        for date: Date,
+        level: TrafficAggregationLevel,
+        calendar: Calendar
+    ) -> DateInterval {
+        switch level {
+        case .second:
+            let start = Date(timeIntervalSince1970: date.timeIntervalSince1970.rounded(.down))
+            return DateInterval(start: start, end: start.addingTimeInterval(1))
+        case .minute:
+            let seconds = (date.timeIntervalSince1970 / 60).rounded(.down) * 60
+            let start = Date(timeIntervalSince1970: seconds)
+            return DateInterval(start: start, end: start.addingTimeInterval(60))
+        case .hour:
+            if let interval = calendar.dateInterval(of: .hour, for: date) { return interval }
+        case .day:
+            if let interval = calendar.dateInterval(of: .day, for: date) { return interval }
+        case .month:
+            if let interval = calendar.dateInterval(of: .month, for: date) { return interval }
+        case .year:
+            if let interval = calendar.dateInterval(of: .year, for: date) { return interval }
         }
+        return DateInterval(start: date, end: date)
     }
 
     public static func aggregate(
@@ -201,24 +352,7 @@ public enum TrafficAggregation {
     ) -> [TrafficSample] {
         var grouped: [String: TrafficSample] = [:]
         for sample in samples {
-            let bucketStart: Date
-            switch level {
-            case .second:
-                bucketStart = sample.timestamp
-            case .minute:
-                let seconds = Int(sample.timestamp.timeIntervalSince1970)
-                bucketStart = Date(timeIntervalSince1970: TimeInterval(seconds - (seconds % 60)))
-            case .hour:
-                bucketStart = calendar.dateInterval(of: .hour, for: sample.timestamp)?.start ?? sample.timestamp
-            case .day:
-                bucketStart = calendar.startOfDay(for: sample.timestamp)
-            case .month:
-                let comps = calendar.dateComponents([.year, .month], from: sample.timestamp)
-                bucketStart = calendar.date(from: comps) ?? sample.timestamp
-            case .year:
-                let comps = calendar.dateComponents([.year], from: sample.timestamp)
-                bucketStart = calendar.date(from: comps) ?? sample.timestamp
-            }
+            let bucketStart = self.bucketInterval(for: sample.timestamp, level: level, calendar: calendar).start
 
             let key = "\(bucketStart.timeIntervalSince1970)|\(sample.network.id)|\(sample.application.id)"
             if var existing = grouped[key] {

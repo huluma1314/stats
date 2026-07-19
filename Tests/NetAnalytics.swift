@@ -1270,7 +1270,7 @@ final class NetAnalyticsTests: XCTestCase {
         try TrafficAggregation.compact(
             repository: repository,
             now: now,
-            policy: TrafficRetentionPolicy(secondRetention: 24 * 60 * 60, minuteRetention: 30 * 24 * 60 * 60, hourRetention: 2 * 365 * 24 * 60 * 60)
+            policy: TrafficRetentionPolicy(minuteRetentionDays: 30, hourRetentionDays: 730, dayRetentionDays: 730)
         )
 
         let seconds = repository.fetch(
@@ -1304,7 +1304,9 @@ final class NetAnalyticsTests: XCTestCase {
         let store = RecordingTrafficStore()
         let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
         let timestamp = Date(timeIntervalSince1970: 1_800_000_010)
-        let policy = TrafficRetentionPolicy(secondRetention: 60, minuteRetention: 60 * 60, hourRetention: 24 * 60 * 60)
+        let policy = TrafficRetentionPolicy(minuteRetentionDays: 7, hourRetentionDays: 60, dayRetentionDays: 730)
+        let firstNow = timestamp.addingTimeInterval(TrafficRetentionPolicy.secondRetention + 2 * 60)
+        let secondNow = timestamp.addingTimeInterval(TrafficRetentionPolicy.secondRetention + 3 * 60)
         let firstHelperA = self.sample(at: timestamp, network: network, applicationID: "app.owner", processID: 41, processName: "Helper A", processStartToken: 101, download: 10, upload: 1)
         let firstHelperB = self.sample(at: timestamp.addingTimeInterval(1), network: network, applicationID: "app.owner", processID: 42, processName: "Helper B", processStartToken: 102, download: 20, upload: 2)
         let firstRepository = TrafficHistoryRepository(store: store)
@@ -1313,7 +1315,7 @@ final class NetAnalyticsTests: XCTestCase {
 
         try TrafficAggregation.compact(
             repository: firstRepository,
-            now: timestamp.addingTimeInterval(2 * 60),
+            now: firstNow,
             policy: policy
         )
 
@@ -1326,7 +1328,7 @@ final class NetAnalyticsTests: XCTestCase {
 
         try TrafficAggregation.compact(
             repository: restarted,
-            now: timestamp.addingTimeInterval(3 * 60),
+            now: secondNow,
             policy: policy
         )
 
@@ -1376,7 +1378,7 @@ final class NetAnalyticsTests: XCTestCase {
 
         try TrafficAggregation.compact(
             repository: finalRepository,
-            now: timestamp.addingTimeInterval(3 * 60),
+            now: secondNow,
             policy: policy
         )
         XCTAssertEqual(finalRepository.fetchRecords(TrafficHistoryQuery(
@@ -1390,7 +1392,7 @@ final class NetAnalyticsTests: XCTestCase {
         let store = RecordingTrafficStore()
         let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
         let now = Date(timeIntervalSince1970: 1_800_010_000)
-        let timestamp = now.addingTimeInterval(-2 * 60 * 60)
+        let timestamp = now.addingTimeInterval(-(TrafficRetentionPolicy.secondRetention + 2 * 60 * 60))
         let helperA = self.sample(
             at: timestamp,
             network: network,
@@ -1428,9 +1430,9 @@ final class NetAnalyticsTests: XCTestCase {
             repository: repository,
             now: now,
             policy: TrafficRetentionPolicy(
-                secondRetention: 60,
-                minuteRetention: 30 * 24 * 60 * 60,
-                hourRetention: 2 * 365 * 24 * 60 * 60
+                minuteRetentionDays: 30,
+                hourRetentionDays: 730,
+                dayRetentionDays: 730
             )
         )
 
@@ -1483,7 +1485,7 @@ final class NetAnalyticsTests: XCTestCase {
         let store = RecordingTrafficStore()
         let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
         let now = Date(timeIntervalSince1970: 1_800_010_000)
-        let timestamp = now.addingTimeInterval(-2 * 60 * 60)
+        let timestamp = now.addingTimeInterval(-(TrafficRetentionPolicy.secondRetention + 2 * 60 * 60))
         let legacy = self.sample(
             at: timestamp,
             network: network,
@@ -1518,7 +1520,7 @@ final class NetAnalyticsTests: XCTestCase {
         let store = RecordingTrafficStore()
         let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
         let now = Date(timeIntervalSince1970: 1_800_020_000)
-        let timestamp = now.addingTimeInterval(-2 * 60 * 60)
+        let timestamp = now.addingTimeInterval(-(TrafficRetentionPolicy.secondRetention + 2 * 60 * 60))
         let firstLifetime = self.sample(
             at: timestamp,
             network: network,
@@ -1546,9 +1548,9 @@ final class NetAnalyticsTests: XCTestCase {
             repository: repository,
             now: now,
             policy: TrafficRetentionPolicy(
-                secondRetention: 60,
-                minuteRetention: 30 * 24 * 60 * 60,
-                hourRetention: 2 * 365 * 24 * 60 * 60
+                minuteRetentionDays: 30,
+                hourRetentionDays: 730,
+                dayRetentionDays: 730
             )
         )
 
@@ -1590,12 +1592,13 @@ final class NetAnalyticsTests: XCTestCase {
         ], deleting: TrafficHistoryQuery(level: .second, start: timestamp, end: timestamp))
 
         let exact = self.sample(at: timestamp.addingTimeInterval(20), network: network, applicationID: "app.owner", processID: 41, processName: "Helper A", processStartToken: 101, download: 5, upload: 4)
+        let compactionNow = timestamp.addingTimeInterval(TrafficRetentionPolicy.secondRetention + 3 * 60)
         let restarted = TrafficHistoryRepository(store: store)
         XCTAssertSuccess(restarted.ingest([exact]))
         try TrafficAggregation.compact(
             repository: restarted,
-            now: timestamp.addingTimeInterval(3 * 60),
-            policy: TrafficRetentionPolicy(secondRetention: 60, minuteRetention: 60 * 60, hourRetention: 24 * 60 * 60)
+            now: compactionNow,
+            policy: TrafficRetentionPolicy(minuteRetentionDays: 7, hourRetentionDays: 60, dayRetentionDays: 730)
         )
 
         let record = TrafficHistoryRepository(store: store).fetchRecords(TrafficHistoryQuery(
@@ -2466,14 +2469,14 @@ final class NetAnalyticsTests: XCTestCase {
         let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         XCTAssertSuccess(repository.ingest([
-            self.sample(at: now.addingTimeInterval(-2 * 60), network: network, applicationID: "app", download: 1, upload: 1)
+            self.sample(at: now.addingTimeInterval(-(TrafficRetentionPolicy.secondRetention + 2 * 60)), network: network, applicationID: "app", download: 1, upload: 1)
         ]))
         store.failNextWrite = true
 
         XCTAssertThrowsError(try TrafficAggregation.compact(
             repository: repository,
             now: now,
-            policy: TrafficRetentionPolicy(secondRetention: 60, minuteRetention: 60 * 60, hourRetention: 24 * 60 * 60)
+            policy: TrafficRetentionPolicy(minuteRetentionDays: 7, hourRetentionDays: 60, dayRetentionDays: 730)
         )) { error in
             XCTAssertTrue(error is TrafficPersistenceError)
         }
@@ -2541,6 +2544,478 @@ final class NetAnalyticsTests: XCTestCase {
         try settings.performAnalyticsClear()
 
         XCTAssertEqual(clearCalls, 1)
+    }
+
+    func testRetentionDefaultsAreFixed24HoursAndConfigurable7_60_730Days() {
+        XCTAssertEqual(TrafficRetentionPolicy.secondRetention, 24 * 60 * 60)
+        XCTAssertEqual(TrafficRetentionPolicy.standard.minuteRetentionDays, 7)
+        XCTAssertEqual(TrafficRetentionPolicy.standard.hourRetentionDays, 60)
+        XCTAssertEqual(TrafficRetentionPolicy.standard.dayRetentionDays, 730)
+        XCTAssertEqual(TrafficRetentionPolicy.standard.compactionBatchSize, 2_000)
+
+        let custom = TrafficRetentionPolicy(
+            minuteRetentionDays: 3,
+            hourRetentionDays: 14,
+            dayRetentionDays: 365,
+            compactionBatchSize: 25
+        )
+        XCTAssertEqual(custom.minuteRetentionDays, 3)
+        XCTAssertEqual(custom.hourRetentionDays, 14)
+        XCTAssertEqual(custom.dayRetentionDays, 365)
+        XCTAssertEqual(custom.compactionBatchSize, 25)
+
+        let preferences = TrafficAnalyticsPreferences.default
+        XCTAssertEqual(preferences.minuteRetentionDays, 7)
+        XCTAssertEqual(preferences.hourRetentionDays, 60)
+        XCTAssertEqual(preferences.dayRetentionDays, 730)
+    }
+
+    func testSettingsResetInvokesClearAnalyticsDataNotTrafficOnlyDeletion() throws {
+        let suiteName = "net.analytics.settings.clear.semantics.tests"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let alerts = TrafficAlertStore(defaults: defaults)
+        alerts.append([TrafficAlertEvent(kind: .quota, message: "quota")])
+        let rules = TrafficRuleStore(defaults: defaults)
+        rules.save(networkPlan: NetworkPlan(billingCycleDay: 9, byteLimit: 100, thresholds: [80]))
+        rules.markNotified(thresholds: [80], scope: "network")
+        let repository = TrafficHistoryRepository(
+            store: InMemoryTrafficStore(),
+            alertStore: alerts,
+            ruleStore: rules
+        )
+        let settings = Settings(.network)
+        settings.clearAnalyticsHistoryCallback = { try repository.clearAnalyticsData() }
+
+        try settings.performAnalyticsClear()
+
+        XCTAssertTrue(alerts.all().isEmpty)
+        XCTAssertTrue(rules.notifiedThresholds(for: "network").isEmpty)
+        XCTAssertEqual(rules.networkPlan().billingCycleDay, 9)
+    }
+
+    func testCompactionPromotesSecondMinuteHourDayMonthAndYearWithoutLoss() throws {
+        let calendar = self.calendar(timeZone: "UTC")
+        let store = RecordingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let sourceDate = self.date(2022, 1, 15, 12, 0, 10, calendar: calendar)
+        let now = self.date(2025, 3, 15, 12, 0, 0, calendar: calendar)
+        XCTAssertSuccess(repository.ingest([
+            self.sample(at: sourceDate, network: network, applicationID: "app", download: 10, upload: 1),
+            self.sample(at: sourceDate.addingTimeInterval(20), network: network, applicationID: "app", download: 20, upload: 2)
+        ]))
+
+        try TrafficAggregation.compact(
+            repository: repository,
+            now: now,
+            policy: TrafficRetentionPolicy(
+                minuteRetentionDays: 1,
+                hourRetentionDays: 1,
+                dayRetentionDays: 1,
+                compactionBatchSize: 2_000
+            ),
+            calendar: calendar
+        )
+
+        for level in [TrafficAggregationLevel.second, .minute, .hour, .day] {
+            XCTAssertTrue(repository.fetchRecords(TrafficHistoryQuery(
+                level: level,
+                start: self.date(2020, 1, 1, calendar: calendar),
+                end: now
+            )).isEmpty, "Expected \(level) to be promoted")
+        }
+        let months = repository.fetchRecords(TrafficHistoryQuery(
+            level: .month,
+            start: self.date(2020, 1, 1, calendar: calendar),
+            end: now
+        ))
+        let years = repository.fetchRecords(TrafficHistoryQuery(
+            level: .year,
+            start: self.date(2020, 1, 1, calendar: calendar),
+            end: now
+        ))
+        XCTAssertEqual(months.map(\.sample.delta.total), [33])
+        XCTAssertEqual(years.map(\.sample.delta.total), [33])
+
+        try TrafficAggregation.compact(
+            repository: TrafficHistoryRepository(store: store),
+            now: now,
+            policy: TrafficRetentionPolicy(
+                minuteRetentionDays: 1,
+                hourRetentionDays: 1,
+                dayRetentionDays: 1,
+                compactionBatchSize: 2_000
+            ),
+            calendar: calendar
+        )
+        XCTAssertEqual(TrafficHistoryRepository(store: store).fetchRecords(TrafficHistoryQuery(
+            level: .year,
+            start: self.date(2020, 1, 1, calendar: calendar),
+            end: now
+        )).map(\.sample.delta.total), [33])
+    }
+
+    func testRetentionAtNonAlignedNowWaitsForWholeDestinationBucketBeforeCompacting() throws {
+        let calendar = self.calendar(timeZone: "UTC")
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = self.date(2026, 7, 18, 12, 34, 30, calendar: calendar)
+        let cutoff = now.addingTimeInterval(-TrafficRetentionPolicy.secondRetention)
+        let previousMinute = cutoff.addingTimeInterval(-45)
+        let partialMinute = cutoff.addingTimeInterval(-10)
+        XCTAssertSuccess(repository.ingest([
+            self.sample(at: previousMinute, network: network, applicationID: "old", download: 10, upload: 0),
+            self.sample(at: partialMinute, network: network, applicationID: "partial", download: 20, upload: 0)
+        ]))
+
+        try TrafficAggregation.compact(repository: repository, now: now, policy: .standard, calendar: calendar)
+
+        XCTAssertEqual(repository.fetch(TrafficHistoryQuery(
+            level: .minute,
+            start: previousMinute.addingTimeInterval(-60),
+            end: cutoff
+        )).map(\.delta.total), [10])
+        XCTAssertEqual(repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: previousMinute.addingTimeInterval(-60),
+            end: cutoff
+        )).map(\.delta.total), [20])
+    }
+
+    func testMonthlyAndYearlySummariesNeverExpire() throws {
+        let calendar = self.calendar(timeZone: "UTC")
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let old = self.date(2001, 1, 1, calendar: calendar)
+        XCTAssertSuccess(repository.ingest([
+            self.sample(at: old, network: network, applicationID: "month", download: 10, upload: 1)
+        ], level: .month))
+        XCTAssertSuccess(repository.ingest([
+            self.sample(at: old, network: network, applicationID: "year", download: 20, upload: 2)
+        ], level: .year))
+
+        try TrafficAggregation.compact(
+            repository: repository,
+            now: self.date(2026, 7, 18, calendar: calendar),
+            policy: .standard,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(repository.fetch(TrafficHistoryQuery(level: .month, start: old, end: Date.distantFuture)).count, 1)
+        XCTAssertFalse(repository.fetch(TrafficHistoryQuery(level: .year, start: old, end: Date.distantFuture)).isEmpty)
+    }
+
+    func testQueryPlannerSplitsARequestAcrossAvailableTiersWithoutOverlap() {
+        let calendar = self.calendar(timeZone: "UTC")
+        let now = self.date(2026, 7, 18, 12, 34, 56, calendar: calendar)
+        let start = self.date(2023, 1, 1, calendar: calendar)
+        let end = now.addingTimeInterval(1)
+        let plan = TrafficQueryPlanner(calendar: calendar).plan(
+            interval: DateInterval(start: start, end: end),
+            now: now,
+            policy: .standard
+        )
+
+        XCTAssertEqual(plan.segments.map(\.level), [.year, .month, .day, .hour, .minute, .second])
+        XCTAssertEqual(plan.segments.first?.interval.start, start)
+        XCTAssertEqual(plan.segments.last?.interval.end, end)
+        for pair in zip(plan.segments, plan.segments.dropFirst()) {
+            XCTAssertEqual(pair.0.interval.end, pair.1.interval.start)
+            XCTAssertLessThanOrEqual(pair.0.interval.end, pair.1.interval.start)
+        }
+    }
+
+    func testCustomRangeAcrossTierBoundariesHasNoMissingOrDuplicateBytes() {
+        let calendar = self.calendar(timeZone: "UTC")
+        let now = self.date(2026, 7, 18, 12, 34, 56, calendar: calendar)
+        let start = self.date(2023, 1, 1, calendar: calendar)
+        let end = now
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let policy = TrafficRetentionPolicy.standard
+        let plan = TrafficQueryPlanner(calendar: calendar).plan(
+            interval: DateInterval(start: start, end: end.addingTimeInterval(1)),
+            now: now,
+            policy: policy
+        )
+        for (index, segment) in plan.segments.enumerated() {
+            let timestamp = segment.interval.start
+            XCTAssertSuccess(repository.ingest([
+                self.sample(
+                    at: timestamp,
+                    network: network,
+                    applicationID: "tier-\(index)",
+                    download: UInt64(index + 1) * 10,
+                    upload: UInt64(index + 1)
+                )
+            ], level: segment.level))
+        }
+
+        let snapshot = TrafficAnalyticsEngine(
+            repository: repository,
+            calendar: calendar,
+            retentionPolicy: policy
+        ).snapshot(for: TrafficAnalyticsQuery(
+            range: .tenMinutes,
+            selectedInterval: DateInterval(start: start, end: end),
+            now: now
+        ))
+
+        XCTAssertEqual(snapshot.total, 231)
+        XCTAssertEqual(snapshot.ranking.count, plan.segments.count)
+    }
+
+    func testCompactionRespectsCalendarDayMonthYearAcrossDST() throws {
+        let calendar = self.calendar(timeZone: "America/Los_Angeles")
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let springDay = self.date(2024, 3, 10, calendar: calendar)
+        XCTAssertSuccess(repository.ingest([
+            self.sample(at: self.date(2024, 3, 10, 1, 30, calendar: calendar), network: network, applicationID: "dst", download: 10, upload: 1),
+            self.sample(at: self.date(2024, 3, 10, 3, 30, calendar: calendar), network: network, applicationID: "dst", download: 20, upload: 2)
+        ], level: .hour))
+
+        try TrafficAggregation.compact(
+            repository: repository,
+            now: self.date(2024, 3, 12, 12, 0, calendar: calendar),
+            policy: TrafficRetentionPolicy(
+                minuteRetentionDays: 1,
+                hourRetentionDays: 1,
+                dayRetentionDays: 730,
+                compactionBatchSize: 2_000
+            ),
+            calendar: calendar
+        )
+
+        let days = repository.fetchRecords(TrafficHistoryQuery(
+            level: .day,
+            start: springDay,
+            end: self.date(2024, 3, 11, calendar: calendar)
+        ))
+        XCTAssertEqual(days.map(\.sample.timestamp), [springDay])
+        XCTAssertEqual(days.map(\.sample.delta.total), [33])
+
+        try TrafficAggregation.compact(
+            repository: repository,
+            now: self.date(2027, 5, 1, calendar: calendar),
+            policy: TrafficRetentionPolicy(
+                minuteRetentionDays: 1,
+                hourRetentionDays: 1,
+                dayRetentionDays: 1,
+                compactionBatchSize: 2_000
+            ),
+            calendar: calendar
+        )
+        XCTAssertEqual(repository.fetchRecords(TrafficHistoryQuery(
+            level: .month,
+            start: self.date(2024, 3, 1, calendar: calendar),
+            end: self.date(2024, 4, 1, calendar: calendar)
+        )).map(\.sample.delta.total), [33])
+        XCTAssertEqual(repository.fetchRecords(TrafficHistoryQuery(
+            level: .year,
+            start: self.date(2024, 1, 1, calendar: calendar),
+            end: self.date(2025, 1, 1, calendar: calendar)
+        )).map(\.sample.delta.total), [33])
+    }
+
+    func testCompactionBatchLimitInsideOneDestinationBucketFinishesTheWholeBucket() throws {
+        let calendar = self.calendar(timeZone: "UTC")
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = self.date(2026, 7, 18, 12, 0, calendar: calendar)
+        let firstMinute = self.date(2026, 7, 17, 10, 0, calendar: calendar)
+        XCTAssertSuccess(repository.ingest([
+            self.sample(at: firstMinute.addingTimeInterval(1), network: network, applicationID: "a", download: 1, upload: 0),
+            self.sample(at: firstMinute.addingTimeInterval(2), network: network, applicationID: "b", download: 2, upload: 0),
+            self.sample(at: firstMinute.addingTimeInterval(3), network: network, applicationID: "c", download: 3, upload: 0),
+            self.sample(at: firstMinute.addingTimeInterval(61), network: network, applicationID: "later", download: 4, upload: 0)
+        ]))
+
+        try TrafficAggregation.compact(
+            repository: repository,
+            now: now,
+            policy: TrafficRetentionPolicy(
+                minuteRetentionDays: 7,
+                hourRetentionDays: 60,
+                dayRetentionDays: 730,
+                compactionBatchSize: 2
+            ),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(repository.fetch(TrafficHistoryQuery(
+            level: .minute,
+            start: firstMinute,
+            end: firstMinute.addingTimeInterval(59)
+        )).reduce(UInt64(0)) { $0 + $1.delta.total }, 6)
+        XCTAssertEqual(repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: firstMinute.addingTimeInterval(60),
+            end: firstMinute.addingTimeInterval(120)
+        )).map(\.delta.total), [4])
+    }
+
+    func testInterruptedCompleteBucketCompactionRestartsWithoutLossOrDuplication() throws {
+        let calendar = self.calendar(timeZone: "UTC")
+        let store = RecordingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = self.date(2026, 7, 18, 12, 0, calendar: calendar)
+        let source = self.date(2026, 7, 17, 10, 0, calendar: calendar)
+        XCTAssertSuccess(repository.ingest([
+            self.sample(at: source.addingTimeInterval(1), network: network, applicationID: "app", download: 10, upload: 1),
+            self.sample(at: source.addingTimeInterval(2), network: network, applicationID: "app", download: 20, upload: 2)
+        ]))
+        store.failNextWrite = true
+
+        XCTAssertThrowsError(try TrafficAggregation.compact(repository: repository, now: now, policy: .standard, calendar: calendar))
+        XCTAssertEqual(repository.fetch(TrafficHistoryQuery(level: .second, start: source, end: source.addingTimeInterval(59))).count, 2)
+        XCTAssertTrue(repository.fetch(TrafficHistoryQuery(level: .minute, start: source, end: source.addingTimeInterval(59))).isEmpty)
+
+        let restarted = TrafficHistoryRepository(store: store)
+        try TrafficAggregation.compact(repository: restarted, now: now, policy: .standard, calendar: calendar)
+        try TrafficAggregation.compact(repository: restarted, now: now, policy: .standard, calendar: calendar)
+        XCTAssertTrue(restarted.fetch(TrafficHistoryQuery(level: .second, start: source, end: source.addingTimeInterval(59))).isEmpty)
+        XCTAssertEqual(restarted.fetch(TrafficHistoryQuery(level: .minute, start: source, end: source.addingTimeInterval(59))).map(\.delta.total), [33])
+    }
+
+    func testRawToMinuteCompactionPreservesProcessSummariesForExportHelper() throws {
+        let calendar = self.calendar(timeZone: "UTC")
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let now = self.date(2026, 7, 18, 12, 0, calendar: calendar)
+        let source = self.date(2026, 7, 17, 10, 0, calendar: calendar)
+        let helperA = self.sample(at: source.addingTimeInterval(1), network: network, applicationID: "owner", processID: 41, processName: "A", processStartToken: 1, download: 10, upload: 1)
+        let helperB = self.sample(at: source.addingTimeInterval(2), network: network, applicationID: "owner", processID: 42, processName: "B", processStartToken: 2, download: 20, upload: 2)
+        XCTAssertSuccess(repository.ingest([helperA, helperB]))
+
+        try TrafficAggregation.compact(repository: repository, now: now, policy: .standard, calendar: calendar)
+
+        let records = repository.fetchRecords(TrafficHistoryQuery(level: .minute, start: source, end: source.addingTimeInterval(59)))
+        XCTAssertEqual(records.first?.processSummaries?.map(\.processDiscriminator), [helperA.processDiscriminator, helperB.processDiscriminator])
+        let ranking = TrafficAnalyticsEngine(repository: repository, calendar: calendar).rank(records: records)
+        XCTAssertEqual(ranking.first?.processes.map { $0.download + $0.upload }, [11, 22])
+        XCTAssertEqual(ranking.first?.total, 33)
+    }
+
+    func testCoordinatorSchedulesBoundedMaintenanceFromCurrentPreferencesAndCancelsOnStop() {
+        let suiteName = "net.analytics.maintenance.preferences.tests"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let preferencesStore = TrafficAnalyticsPreferencesStore(defaults: defaults)
+        var preferences = preferencesStore.preferences()
+        preferences.minuteRetentionDays = 1
+        preferences.hourRetentionDays = 1
+        preferences.dayRetentionDays = 1
+        preferencesStore.save(preferences)
+        let scheduler = ManualTrafficMaintenanceScheduler()
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 2_000_000_000))
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        XCTAssertSuccess(repository.ingest([
+            self.sample(at: clock.now().addingTimeInterval(-25 * 60 * 60), network: network, applicationID: "app", download: 10, upload: 1)
+        ]))
+        let coordinator = TrafficAnalyticsCoordinator(
+            repository: repository,
+            clock: clock,
+            preferencesStore: preferencesStore,
+            maintenanceScheduler: scheduler,
+            maintenanceInterval: 6 * 60 * 60
+        )
+
+        coordinator.start()
+        XCTAssertEqual(scheduler.delays, [0])
+        scheduler.runNext()
+        XCTAssertTrue(self.waitUntil { scheduler.delays == [0, 6 * 60 * 60] })
+        XCTAssertTrue(repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: Date(timeIntervalSince1970: 0),
+            end: clock.now()
+        )).isEmpty)
+
+        _ = coordinator.stop()
+        XCTAssertFalse(scheduler.hasPendingWork)
+    }
+
+    func testCoordinatorMaintenanceNeverOverlapsIngestionOrClear() throws {
+        let scheduler = ManualTrafficMaintenanceScheduler()
+        let store = BlockingTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 2_000_000_000))
+        let coordinator = TrafficAnalyticsCoordinator(
+            repository: repository,
+            clock: clock,
+            maintenanceScheduler: scheduler
+        )
+        coordinator.start()
+
+        let ingestFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            coordinator.ingest(counters: [ProcessTrafficCounter(
+                identity: self.identity,
+                processID: 42,
+                processStartToken: 1,
+                isDelta: true,
+                download: 10,
+                upload: 1
+            )])
+            ingestFinished.signal()
+        }
+        XCTAssertTrue(store.waitUntilWriteStarts())
+
+        scheduler.runNext()
+        let clearFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            try? coordinator.clearAnalyticsData()
+            clearFinished.signal()
+        }
+        XCTAssertEqual(clearFinished.wait(timeout: .now() + 0.05), .timedOut)
+
+        store.finishBlockedWrite()
+        XCTAssertEqual(ingestFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(clearFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: Date.distantPast,
+            end: Date.distantFuture
+        )).isEmpty)
+        _ = coordinator.stop()
+    }
+
+    private func waitUntil(timeout: TimeInterval = 1, condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.001))
+        }
+        return condition()
+    }
+
+    private func calendar(timeZone: String) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: timeZone)!
+        return calendar
+    }
+
+    private func date(
+        _ year: Int,
+        _ month: Int,
+        _ day: Int,
+        _ hour: Int = 0,
+        _ minute: Int = 0,
+        _ second: Int = 0,
+        calendar: Calendar
+    ) -> Date {
+        calendar.date(from: DateComponents(
+            timeZone: calendar.timeZone,
+            year: year,
+            month: month,
+            day: day,
+            hour: hour,
+            minute: minute,
+            second: second
+        ))!
     }
 
     private func sample(
@@ -2677,6 +3152,34 @@ private final class MutableTrafficClock: TrafficClock {
 
     func advance(by interval: TimeInterval) {
         self.current = self.current.addingTimeInterval(interval)
+    }
+}
+
+private final class ManualTrafficMaintenanceScheduler: TrafficMaintenanceScheduling {
+    private final class Token: TrafficMaintenanceCancellation {
+        var isCancelled = false
+        func cancel() { self.isCancelled = true }
+    }
+
+    private var work: [(delay: TimeInterval, token: Token, block: () -> Void)] = []
+    private(set) var delays: [TimeInterval] = []
+    var hasPendingWork: Bool { self.work.contains { !$0.token.isCancelled } }
+
+    func schedule(after delay: TimeInterval, _ block: @escaping () -> Void) -> TrafficMaintenanceCancellation {
+        let token = Token()
+        self.delays.append(delay)
+        self.work.append((delay, token, block))
+        return token
+    }
+
+    func runNext() {
+        while !self.work.isEmpty {
+            let next = self.work.removeFirst()
+            if next.token.isCancelled { continue }
+            next.block()
+            return
+        }
+        XCTFail("Expected scheduled maintenance")
     }
 }
 

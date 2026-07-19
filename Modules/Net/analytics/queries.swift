@@ -115,6 +115,107 @@ public struct TrafficAnalyticsSnapshot: Codable, Equatable {
     }
 }
 
+public struct TrafficQuerySegment: Equatable {
+    public let level: TrafficAggregationLevel
+    public let interval: DateInterval
+
+    public init(level: TrafficAggregationLevel, interval: DateInterval) {
+        self.level = level
+        self.interval = interval
+    }
+}
+
+public struct TrafficQueryPlan: Equatable {
+    public let segments: [TrafficQuerySegment]
+
+    public init(segments: [TrafficQuerySegment]) {
+        self.segments = segments
+    }
+}
+
+public struct TrafficQueryPlanner {
+    private let calendar: Calendar
+
+    public init(calendar: Calendar = .current) {
+        self.calendar = calendar
+    }
+
+    public func plan(
+        interval: DateInterval,
+        now: Date,
+        policy: TrafficRetentionPolicy
+    ) -> TrafficQueryPlan {
+        guard interval.start < interval.end else { return TrafficQueryPlan(segments: []) }
+        let minuteCutoff = self.calendar.date(byAdding: .day, value: -policy.minuteRetentionDays, to: now)
+            ?? now.addingTimeInterval(-TimeInterval(policy.minuteRetentionDays) * 86_400)
+        let hourCutoff = self.calendar.date(byAdding: .day, value: -policy.hourRetentionDays, to: now)
+            ?? now.addingTimeInterval(-TimeInterval(policy.hourRetentionDays) * 86_400)
+        let dayCutoff = self.calendar.date(byAdding: .day, value: -policy.dayRetentionDays, to: now)
+            ?? now.addingTimeInterval(-TimeInterval(policy.dayRetentionDays) * 86_400)
+        let secondCutoff = now.addingTimeInterval(-TrafficRetentionPolicy.secondRetention)
+        let monthBoundary = TrafficAggregation.bucketInterval(for: dayCutoff, level: .month, calendar: self.calendar).start
+        let dayBoundary = TrafficAggregation.bucketInterval(for: hourCutoff, level: .day, calendar: self.calendar).start
+        let hourBoundary = TrafficAggregation.bucketInterval(for: minuteCutoff, level: .hour, calendar: self.calendar).start
+        let minuteBoundary = TrafficAggregation.bucketInterval(for: secondCutoff, level: .minute, calendar: self.calendar).start
+
+        var segments: [TrafficQuerySegment] = []
+        var cursor = interval.start
+        let oldEnd = min(interval.end, monthBoundary)
+        if cursor < oldEnd {
+            cursor = self.appendPermanentSegments(from: cursor, to: oldEnd, into: &segments)
+        }
+        self.append(.day, from: &cursor, to: min(interval.end, dayBoundary), into: &segments)
+        self.append(.hour, from: &cursor, to: min(interval.end, hourBoundary), into: &segments)
+        self.append(.minute, from: &cursor, to: min(interval.end, minuteBoundary), into: &segments)
+        self.append(.second, from: &cursor, to: interval.end, into: &segments)
+        return TrafficQueryPlan(segments: segments)
+    }
+
+    private func appendPermanentSegments(
+        from start: Date,
+        to end: Date,
+        into segments: inout [TrafficQuerySegment]
+    ) -> Date {
+        var cursor = start
+        let firstFullYearStart = self.calendar.dateInterval(of: .year, for: cursor)?.start == cursor
+            ? cursor
+            : (self.calendar.date(byAdding: .year, value: 1, to: self.calendar.dateInterval(of: .year, for: cursor)?.start ?? cursor) ?? end)
+        let yearlyStart = min(max(firstFullYearStart, cursor), end)
+        if cursor < yearlyStart {
+            segments.append(TrafficQuerySegment(level: .month, interval: DateInterval(start: cursor, end: yearlyStart)))
+            cursor = yearlyStart
+        }
+
+        var fullYearEnd = cursor
+        while fullYearEnd < end,
+              let yearInterval = self.calendar.dateInterval(of: .year, for: fullYearEnd),
+              yearInterval.start == fullYearEnd,
+              yearInterval.end <= end {
+            fullYearEnd = yearInterval.end
+        }
+        if cursor < fullYearEnd {
+            segments.append(TrafficQuerySegment(level: .year, interval: DateInterval(start: cursor, end: fullYearEnd)))
+            cursor = fullYearEnd
+        }
+        if cursor < end {
+            segments.append(TrafficQuerySegment(level: .month, interval: DateInterval(start: cursor, end: end)))
+            cursor = end
+        }
+        return cursor
+    }
+
+    private func append(
+        _ level: TrafficAggregationLevel,
+        from cursor: inout Date,
+        to end: Date,
+        into segments: inout [TrafficQuerySegment]
+    ) {
+        guard cursor < end else { return }
+        segments.append(TrafficQuerySegment(level: level, interval: DateInterval(start: cursor, end: end)))
+        cursor = end
+    }
+}
+
 public struct TrafficAnalyticsQuery: Equatable {
     public let range: TrafficRange
     public let networkFilter: NetworkKind?
@@ -146,10 +247,16 @@ public struct TrafficAnalyticsQuery: Equatable {
 public final class TrafficAnalyticsEngine {
     private let repository: TrafficHistoryRepository
     private let calendar: Calendar
+    private let retentionPolicy: TrafficRetentionPolicy
 
-    public init(repository: TrafficHistoryRepository, calendar: Calendar = .current) {
+    public init(
+        repository: TrafficHistoryRepository,
+        calendar: Calendar = .current,
+        retentionPolicy: TrafficRetentionPolicy = .standard
+    ) {
         self.repository = repository
         self.calendar = calendar
+        self.retentionPolicy = retentionPolicy
     }
 
     public func snapshot(for query: TrafficAnalyticsQuery) -> TrafficAnalyticsSnapshot {
@@ -160,18 +267,19 @@ public final class TrafficAnalyticsEngine {
         )
         let interval = query.selectedInterval ?? DateInterval(start: preset.start, end: preset.end)
         let effectiveRange = query.selectedInterval.map { TrafficCustomRange.range(for: $0.duration) } ?? query.range
-        let level = self.storageLevel(for: effectiveRange)
-        var records = self.repository.fetchRecords(
-            TrafficHistoryQuery(level: level, start: interval.start, end: interval.end)
+        let halfOpenEnd = interval.end.addingTimeInterval(1)
+        let plan = TrafficQueryPlanner(calendar: self.calendar).plan(
+            interval: DateInterval(start: interval.start, end: halfOpenEnd),
+            now: query.now,
+            policy: self.retentionPolicy
         )
-
-        if level != .second {
-            let finer = self.repository.fetchRecords(
-                TrafficHistoryQuery(level: .second, start: interval.start, end: interval.end)
-            )
-            if !finer.isEmpty {
-                records.append(contentsOf: finer)
-            }
+        var records = plan.segments.flatMap { segment in
+            self.repository.fetchRecords(TrafficHistoryQuery(
+                level: segment.level,
+                start: segment.interval.start,
+                end: segment.interval.end,
+                endExclusive: true
+            ))
         }
 
         records = self.deduplicate(records)
@@ -420,17 +528,6 @@ public final class TrafficAnalyticsEngine {
             }
         }
         return result.sorted { sample($0).timestamp < sample($1).timestamp }
-    }
-
-    private func storageLevel(for range: TrafficRange) -> TrafficAggregationLevel {
-        switch range {
-        case .tenMinutes, .oneHour, .today:
-            return .second
-        case .sevenDays, .thirtyDays:
-            return .minute
-        case .currentMonth:
-            return .hour
-        }
     }
 
     private func billingPeriod(containing date: Date, cycleDay: Int) -> DateInterval {

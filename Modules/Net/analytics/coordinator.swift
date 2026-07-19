@@ -48,12 +48,59 @@ public struct SystemTrafficClock: TrafficClock {
     public func now() -> Date { Date() }
 }
 
+public protocol TrafficMaintenanceCancellation: AnyObject {
+    func cancel()
+}
+
+public protocol TrafficMaintenanceScheduling: AnyObject {
+    func schedule(after delay: TimeInterval, _ block: @escaping () -> Void) -> TrafficMaintenanceCancellation
+}
+
+public final class DispatchTrafficMaintenanceScheduler: TrafficMaintenanceScheduling {
+    private final class Cancellation: TrafficMaintenanceCancellation {
+        private let lock = NSLock()
+        private var workItem: DispatchWorkItem?
+
+        func set(_ workItem: DispatchWorkItem) {
+            self.lock.lock()
+            self.workItem = workItem
+            self.lock.unlock()
+        }
+
+        func cancel() {
+            self.lock.lock()
+            let item = self.workItem
+            self.workItem = nil
+            self.lock.unlock()
+            item?.cancel()
+        }
+    }
+
+    private let queue: DispatchQueue
+
+    public init(queue: DispatchQueue = DispatchQueue(label: "eu.exelban.Stats.Net.analytics.maintenance", qos: .utility)) {
+        self.queue = queue
+    }
+
+    public func schedule(after delay: TimeInterval, _ block: @escaping () -> Void) -> TrafficMaintenanceCancellation {
+        let cancellation = Cancellation()
+        let workItem = DispatchWorkItem(block: block)
+        cancellation.set(workItem)
+        self.queue.asyncAfter(deadline: .now() + max(0, delay), execute: workItem)
+        return cancellation
+    }
+}
+
 public final class TrafficAnalyticsCoordinator {
     private let repository: TrafficHistoryRepository
     private let resolver: ApplicationIdentityResolver
     private let clock: TrafficClock
     private let queue: DispatchQueue
     private let persistencePolicy: TrafficPersistencePolicy
+    private let preferencesStore: TrafficAnalyticsPreferencesStore
+    private let maintenanceScheduler: TrafficMaintenanceScheduling
+    private let maintenanceInterval: TimeInterval
+    private let calendar: Calendar
 
     private var previousCounters: [String: ProcessTrafficCounter] = [:]
     private var currentNetwork = NetworkIdentity(
@@ -68,33 +115,49 @@ public final class TrafficAnalyticsCoordinator {
     private var isHistoryEnabled = true
     private var consecutivePersistenceFailures = 0
     private var pendingSamples: [TrafficSample] = []
+    private var maintenanceCancellation: TrafficMaintenanceCancellation?
+    private var collectionGeneration: UInt64 = 0
 
     public init(
         repository: TrafficHistoryRepository,
         resolver: ApplicationIdentityResolver = ApplicationIdentityResolver(provider: AppKitProcessMetadataProvider()),
         clock: TrafficClock = SystemTrafficClock(),
         queue: DispatchQueue = DispatchQueue(label: "eu.exelban.Stats.Net.analytics.coordinator"),
-        persistencePolicy: TrafficPersistencePolicy = TrafficPersistencePolicy()
+        persistencePolicy: TrafficPersistencePolicy = TrafficPersistencePolicy(),
+        preferencesStore: TrafficAnalyticsPreferencesStore = TrafficAnalyticsPreferencesStore(),
+        maintenanceScheduler: TrafficMaintenanceScheduling = DispatchTrafficMaintenanceScheduler(),
+        maintenanceInterval: TimeInterval = 6 * 60 * 60,
+        calendar: Calendar = .current
     ) {
         self.repository = repository
         self.resolver = resolver
         self.clock = clock
         self.queue = queue
         self.persistencePolicy = persistencePolicy
+        self.preferencesStore = preferencesStore
+        self.maintenanceScheduler = maintenanceScheduler
+        self.maintenanceInterval = maintenanceInterval
+        self.calendar = calendar
     }
 
     public func start() {
         self.queue.sync {
+            guard !self.isCollecting else { return }
             self.isCollecting = true
+            self.collectionGeneration &+= 1
             if self.isHistoryEnabled {
                 self.lastError = nil
             }
+            self.scheduleMaintenanceLocked(after: 0, generation: self.collectionGeneration)
         }
     }
 
     @discardableResult
     public func stop() -> Bool {
         self.queue.sync {
+            self.collectionGeneration &+= 1
+            self.maintenanceCancellation?.cancel()
+            self.maintenanceCancellation = nil
             let persisted = self.flushLocked()
             self.isCollecting = false
             return persisted
@@ -305,6 +368,33 @@ public final class TrafficAnalyticsCoordinator {
                 self.lastError = "Traffic history persistence failed (attempt \(self.consecutivePersistenceFailures)/\(self.persistencePolicy.maxConsecutiveFailures)): \(persistenceError.description)"
             }
             return false
+        }
+    }
+
+    private func scheduleMaintenanceLocked(after delay: TimeInterval, generation: UInt64) {
+        self.maintenanceCancellation?.cancel()
+        self.maintenanceCancellation = self.maintenanceScheduler.schedule(after: delay) { [weak self] in
+            self?.runMaintenance(generation: generation)
+        }
+    }
+
+    private func runMaintenance(generation: UInt64) {
+        self.queue.async { [weak self] in
+            guard let self,
+                  self.isCollecting,
+                  generation == self.collectionGeneration else { return }
+            do {
+                try TrafficAggregation.compact(
+                    repository: self.repository,
+                    now: self.clock.now(),
+                    policy: TrafficRetentionPolicy(preferences: self.preferencesStore.preferences()),
+                    calendar: self.calendar
+                )
+            } catch {
+                self.lastError = "Traffic history maintenance failed: \(error.localizedDescription)"
+            }
+            guard self.isCollecting, generation == self.collectionGeneration else { return }
+            self.scheduleMaintenanceLocked(after: self.maintenanceInterval, generation: generation)
         }
     }
 
