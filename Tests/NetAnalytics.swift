@@ -918,15 +918,30 @@ final class NetAnalyticsTests: XCTestCase {
         wrapper.layoutSubtreeIfNeeded()
 
         let cards = self.descendants(of: preview)
-            .compactMap { $0 as? NSStackView }
-            .first { $0.identifier?.rawValue == "traffic-overview-cards" }
+            .first { $0.identifier?.rawValue == "overview-period-card" }
         let topApps = self.descendants(of: preview)
-            .compactMap { $0 as? NSStackView }
-            .first { $0.identifier?.rawValue == "traffic-overview-top-apps" }
+            .first { $0.identifier?.rawValue == "overview-top-applications" }
 
         XCTAssertGreaterThan(cards?.frame.width ?? 0, 1_000)
-        XCTAssertLessThan(cards?.frame.minX ?? 10_000, 10)
-        XCTAssertLessThan(topApps?.frame.minY ?? 10_000, 400)
+        XCTAssertLessThanOrEqual(cards?.frame.minX ?? 10_000, 20)
+        XCTAssertGreaterThan(topApps?.frame.height ?? 0, 190)
+    }
+
+    func testMonthlyOverviewExposesAcceptanceCardHierarchy() {
+        let previousPage = Store.shared.string(
+            key: NetworkPreviewPage.storageKey,
+            defaultValue: NetworkPreviewPage.realtime.rawValue
+        )
+        Store.shared.set(key: NetworkPreviewPage.storageKey, value: NetworkPreviewPage.overview.rawValue)
+        defer { Store.shared.set(key: NetworkPreviewPage.storageKey, value: previousPage) }
+
+        let preview = Preview(.network)
+        let identifiers = Set(self.descendants(of: preview).compactMap { $0.identifier?.rawValue })
+
+        XCTAssertTrue(identifiers.contains("overview-anomaly-status"))
+        XCTAssertTrue(identifiers.contains("overview-period-card"))
+        XCTAssertTrue(identifiers.contains("overview-seven-day-card"))
+        XCTAssertTrue(identifiers.contains("overview-top-applications"))
     }
 
     func testTrafficSelectionRefreshIntervals() {

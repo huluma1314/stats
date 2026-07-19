@@ -590,6 +590,14 @@
 "Projected" = "Projected";
 "Last 7 days" = "Last 7 days";
 "Top applications" = "Top applications";
+"No unusual traffic detected" = "No unusual traffic detected";
+"Current period usage" = "Current period usage";
+"Billing progress" = "Billing progress";
+"Remaining quota" = "Remaining quota";
+"No quota configured" = "No quota configured";
+"Month-end forecast" = "Month-end forecast";
+"No application traffic yet" = "No application traffic yet";
+"Analytics stay on this Mac" = "Analytics stay on this Mac";
 "Current period" = "Current period";
 "Quota" = "Quota";
 "Forecast" = "Forecast";

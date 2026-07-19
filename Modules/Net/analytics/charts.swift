@@ -48,6 +48,17 @@ public enum TrafficChartGeometry {
         }
     }
 
+    public static func overviewPoints(values: [UInt64], in plot: CGRect) -> [CGPoint] {
+        guard !values.isEmpty else { return [] }
+        let maximum = max(values.max() ?? 1, 1)
+        return values.enumerated().map { index, value in
+            CGPoint(
+                x: self.xPosition(index: index, count: values.count, in: plot),
+                y: plot.maxY - plot.height * CGFloat(value) / CGFloat(maximum)
+            )
+        }
+    }
+
     public static func heatmapCells(from buckets: [TrafficBucket]) -> [HeatmapCell] {
         let maxTotal = max(buckets.map { $0.download + $0.upload }.max() ?? 1, 1)
         return buckets.map {

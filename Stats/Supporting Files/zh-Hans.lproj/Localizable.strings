@@ -590,6 +590,14 @@
 "Projected" = "预计用量";
 "Last 7 days" = "近 7 天";
 "Top applications" = "应用排行";
+"No unusual traffic detected" = "未发现异常流量";
+"Current period usage" = "当前账期用量";
+"Billing progress" = "账期进度";
+"Remaining quota" = "剩余额度";
+"No quota configured" = "未设置流量额度";
+"Month-end forecast" = "月末预测";
+"No application traffic yet" = "暂无应用流量";
+"Analytics stay on this Mac" = "分析数据仅保留在这台 Mac 上";
 "Current period" = "当前周期";
 "Quota" = "配额";
 "Forecast" = "预测";
