@@ -944,6 +944,39 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertTrue(identifiers.contains("overview-top-applications"))
     }
 
+    func testMonthlyOverviewUsesConfiguredBillingPeriodForProgressAndQuery() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 7, day: 19, hour: 12))!
+        let period = TrafficOverviewBillingPeriod(containing: now, cycleDay: 15, calendar: calendar)
+        let query = period.query(networkID: "wifi:home", now: now)
+
+        XCTAssertEqual(calendar.component(.day, from: period.interval.start), 15)
+        XCTAssertEqual(calendar.component(.month, from: period.interval.start), 7)
+        XCTAssertEqual(calendar.component(.day, from: period.interval.end), 15)
+        XCTAssertEqual(calendar.component(.month, from: period.interval.end), 8)
+        XCTAssertEqual(period.elapsedDays(at: now), 5)
+        XCTAssertEqual(period.totalDays, 31)
+        XCTAssertEqual(query.range, .currentMonth)
+        XCTAssertEqual(query.selectedInterval, DateInterval(start: period.interval.start, end: now))
+        XCTAssertEqual(query.billingCycleDay, 15)
+
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let network = NetworkIdentity(id: "wifi:home", displayName: "Home", interfaceName: "en0", kind: .wifi)
+        let boundaryNow = calendar.date(from: DateComponents(year: 2026, month: 7, day: 15, hour: 12))!
+        let boundaryPeriod = TrafficOverviewBillingPeriod(containing: boundaryNow, cycleDay: 15, calendar: calendar)
+        let beforeCycle = calendar.date(from: DateComponents(year: 2026, month: 7, day: 14, hour: 18))!
+        let insideCycle = calendar.date(from: DateComponents(year: 2026, month: 7, day: 15, hour: 10))!
+        XCTAssertSuccess(repository.ingest([
+            self.sample(at: beforeCycle, network: network, applicationID: self.identity.id, download: 100, upload: 0),
+            self.sample(at: insideCycle, network: network, applicationID: self.identity.id, download: 40, upload: 2)
+        ]))
+        let snapshot = TrafficAnalyticsEngine(repository: repository, calendar: calendar).snapshot(
+            for: boundaryPeriod.query(networkID: "wifi:home", now: boundaryNow)
+        )
+        XCTAssertEqual(snapshot.total, 42)
+    }
+
     func testTrafficSelectionRefreshIntervals() {
         XCTAssertNil(TrafficRefreshMode.manual.interval)
         XCTAssertEqual(TrafficRefreshMode.fiveSeconds.interval, 5)

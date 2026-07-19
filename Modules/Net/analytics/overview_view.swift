@@ -6,6 +6,62 @@
 import Cocoa
 import Kit
 
+internal struct TrafficOverviewBillingPeriod {
+    let interval: DateInterval
+    private let calendar: Calendar
+    private let cycleDay: Int
+
+    init(containing date: Date, cycleDay: Int, calendar: Calendar = .current) {
+        self.calendar = calendar
+        let requestedDay = min(max(cycleDay, 1), 31)
+        self.cycleDay = requestedDay
+        let monthAnchor = calendar.date(from: calendar.dateComponents([.year, .month], from: date))
+            ?? calendar.startOfDay(for: date)
+        let thisCycle = Self.cycleDate(monthAnchor: monthAnchor, requestedDay: requestedDay, calendar: calendar)
+        if date >= thisCycle {
+            let nextMonth = calendar.date(byAdding: .month, value: 1, to: monthAnchor)
+                ?? monthAnchor.addingTimeInterval(31 * 86_400)
+            self.interval = DateInterval(
+                start: thisCycle,
+                end: Self.cycleDate(monthAnchor: nextMonth, requestedDay: requestedDay, calendar: calendar)
+            )
+        } else {
+            let previousMonth = calendar.date(byAdding: .month, value: -1, to: monthAnchor)
+                ?? monthAnchor.addingTimeInterval(-31 * 86_400)
+            self.interval = DateInterval(
+                start: Self.cycleDate(monthAnchor: previousMonth, requestedDay: requestedDay, calendar: calendar),
+                end: thisCycle
+            )
+        }
+    }
+
+    var totalDays: Int {
+        max(1, self.calendar.dateComponents([.day], from: self.interval.start, to: self.interval.end).day ?? 1)
+    }
+
+    func elapsedDays(at date: Date) -> Int {
+        let completed = self.calendar.dateComponents([.day], from: self.interval.start, to: min(date, self.interval.end)).day ?? 0
+        return min(self.totalDays, max(1, completed + 1))
+    }
+
+    func query(networkID: String?, now: Date) -> TrafficAnalyticsQuery {
+        TrafficAnalyticsQuery(
+            range: .currentMonth,
+            networkID: networkID,
+            selectedInterval: DateInterval(start: self.interval.start, end: min(now, self.interval.end)),
+            billingCycleDay: self.cycleDay,
+            now: now
+        )
+    }
+
+    private static func cycleDate(monthAnchor: Date, requestedDay: Int, calendar: Calendar) -> Date {
+        let availableDays = calendar.range(of: .day, in: .month, for: monthAnchor)?.count ?? 28
+        var components = calendar.dateComponents([.year, .month], from: monthAnchor)
+        components.day = min(requestedDay, availableDays)
+        return calendar.date(from: components) ?? monthAnchor
+    }
+}
+
 internal final class TrafficOverviewView: NSView {
     private let engine: TrafficAnalyticsEngine
     private let planStore: TrafficRuleStore
@@ -42,17 +98,12 @@ internal final class TrafficOverviewView: NSView {
         if let networkID { self.selectedNetworkID = networkID }
         let now = Date()
         let plan = self.selectedNetworkID.map { self.planStore.networkPlan(for: $0) } ?? self.planStore.networkPlan()
-        let snapshot = self.engine.snapshot(for: TrafficAnalyticsQuery(
-            range: .currentMonth,
-            networkID: self.selectedNetworkID,
-            billingCycleDay: plan.billingCycleDay,
-            now: now
-        ))
+        let billingPeriod = TrafficOverviewBillingPeriod(containing: now, cycleDay: plan.billingCycleDay)
+        let snapshot = self.engine.snapshot(for: billingPeriod.query(networkID: self.selectedNetworkID, now: now))
 
         self.usedLabel.stringValue = Units(bytes: Int64(snapshot.total)).getReadableMemory()
-        let calendar = Calendar.current
-        let elapsed = max(1, calendar.component(.day, from: now))
-        let days = calendar.range(of: .day, in: .month, for: now)?.count ?? 30
+        let elapsed = billingPeriod.elapsedDays(at: now)
+        let days = billingPeriod.totalDays
         self.periodLabel.stringValue = "\(localizedString("Billing progress"))  \(elapsed) / \(days)"
         self.progress.doubleValue = min(100, Double(elapsed) / Double(days) * 100)
 
