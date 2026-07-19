@@ -1060,13 +1060,18 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(focused.activeApplications.map(\.identity.id), ["app.b"])
     }
 
-    func testLiveTrafficViewExposesBytetallyControls() {
+    func testLiveTrafficViewExposesWorkspaceHierarchy() {
         let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
         let view = LiveTrafficView(engine: TrafficAnalyticsEngine(repository: repository))
-        view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 560)
+        view.frame = NSRect(x: 0, y: 0, width: 720, height: 480)
         view.layoutSubtreeIfNeeded()
 
         let descendants = self.descendants(of: view)
+        let identifiers = Set(descendants.compactMap { $0.identifier?.rawValue })
+        XCTAssertTrue(identifiers.contains("live-focus"))
+        XCTAssertTrue(identifiers.contains("live-rate-card"))
+        XCTAssertTrue(identifiers.contains("live-chart-card"))
+        XCTAssertTrue(identifiers.contains("live-active-processes"))
         XCTAssertNotNil(descendants.compactMap { $0 as? NSPopUpButton }.first)
         XCTAssertNotNil(descendants.compactMap { $0 as? NSSegmentedControl }.first { $0.segmentCount == 3 })
         XCTAssertTrue(descendants.contains { $0 is LiveTrafficChartView })

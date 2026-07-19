@@ -669,9 +669,10 @@ internal final class TrafficAnalysisView: NSView {
 internal final class LiveTrafficView: NSView {
     private let engine: TrafficAnalyticsEngine
     private var windowSelection: LiveTrafficWindow = .sixtySeconds
-    private var applicationID: String? = nil
+    private var applicationID: String?
     private var applicationIDs: [String?] = [nil]
-    private var refreshTimer: Timer? = nil
+    private var refreshTimer: Timer?
+    private var appearanceCards: [NSView] = []
 
     private let focusControl = NSPopUpButton()
     private let windowControl = NSSegmentedControl()
@@ -690,36 +691,33 @@ internal final class LiveTrafficView: NSView {
         self.reload()
     }
 
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    deinit {
-        self.refreshTimer?.invalidate()
-    }
+    deinit { self.refreshTimer?.invalidate() }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         self.refreshTimer?.invalidate()
         self.refreshTimer = nil
         guard self.window != nil else { return }
-        self.refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.reload()
-        }
+        self.refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.reload() }
         self.reload()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        self.updateCardAppearance()
+    }
+
     func reload(now: Date = Date()) {
-        let snapshot = self.engine.liveSnapshot(
-            window: self.windowSelection,
-            applicationID: self.applicationID,
-            now: now
-        )
+        let snapshot = self.engine.liveSnapshot(window: self.windowSelection, applicationID: self.applicationID, now: now)
         self.downloadLabel.stringValue = self.rate(snapshot.downloadBytesPerSecond)
         self.uploadLabel.stringValue = self.rate(snapshot.uploadBytesPerSecond)
         self.totalLabel.stringValue = self.rate(snapshot.totalBytesPerSecond)
         self.chart.points = snapshot.points
-        self.apps.items = snapshot.activeApplications
+        self.apps.items = snapshot.activeApplications.sorted {
+            $0.total == $1.total ? $0.identity.displayName < $1.identity.displayName : $0.total > $1.total
+        }
         self.updateFocusControl(snapshot.applications)
     }
 
@@ -727,92 +725,116 @@ internal final class LiveTrafficView: NSView {
         let stack = FlippedStackView()
         stack.orientation = .vertical
         stack.alignment = .width
-        stack.distribution = .fill
-        stack.spacing = 10
+        stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         self.addSubview(stack)
-        self.heightAnchor.constraint(greaterThanOrEqualToConstant: 500).isActive = true
+        self.heightAnchor.constraint(greaterThanOrEqualToConstant: 560).isActive = true
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: self.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: self.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: self.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: self.bottomAnchor)
+            stack.leadingAnchor.constraint(equalTo: self.leadingAnchor), stack.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: self.topAnchor), stack.bottomAnchor.constraint(equalTo: self.bottomAnchor)
         ])
 
         self.focusControl.addItem(withTitle: localizedString("All applications"))
+        self.focusControl.identifier = NSUserInterfaceItemIdentifier("live-focus")
         self.focusControl.target = self
         self.focusControl.action = #selector(self.focusChanged)
+        self.focusControl.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let focusLabel = NSTextField(labelWithString: localizedString("Application focus"))
+        focusLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        let controls = NSStackView(views: [focusLabel, self.focusControl])
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
+        controls.spacing = 10
+        stack.addArrangedSubview(controls)
+        controls.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        let rateContent = NSStackView(views: [
+            self.rateMetric(title: localizedString("Download"), value: self.downloadLabel, color: .systemBlue),
+            self.rateMetric(title: localizedString("Upload"), value: self.uploadLabel, color: .systemOrange),
+            self.rateMetric(title: localizedString("Total"), value: self.totalLabel, color: .labelColor)
+        ])
+        rateContent.orientation = .horizontal
+        rateContent.distribution = .fillEqually
+        rateContent.spacing = 8
+        let rateCard = self.card(containing: rateContent, identifier: "live-rate-card")
+        rateCard.heightAnchor.constraint(equalToConstant: 92).isActive = true
+        stack.addArrangedSubview(rateCard)
 
         self.windowControl.segmentCount = LiveTrafficWindow.allCases.count
-        for (index, item) in LiveTrafficWindow.allCases.enumerated() {
-            self.windowControl.setLabel(self.windowTitle(item), forSegment: index)
-        }
+        for (index, item) in LiveTrafficWindow.allCases.enumerated() { self.windowControl.setLabel(self.windowTitle(item), forSegment: index) }
         self.windowControl.selectedSegment = 0
         self.windowControl.target = self
         self.windowControl.action = #selector(self.windowChanged)
 
-        let controls = NSStackView(views: [self.focusControl, self.windowControl])
-        controls.orientation = .horizontal
-        controls.alignment = .centerY
-        controls.distribution = .fill
-        controls.spacing = 8
-        stack.addArrangedSubview(controls)
-        controls.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-
-        let cards = NSStackView(views: [
-            self.rateCard(title: localizedString("Download"), value: self.downloadLabel, color: .systemBlue),
-            self.rateCard(title: localizedString("Upload"), value: self.uploadLabel, color: .systemRed),
-            self.rateCard(title: localizedString("Total"), value: self.totalLabel, color: .labelColor)
-        ])
-        cards.orientation = .horizontal
-        cards.distribution = .fillEqually
-        cards.spacing = 8
-        stack.addArrangedSubview(cards)
-        cards.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-
         let chartTitle = NSTextField(labelWithString: localizedString("Live application traffic"))
-        chartTitle.font = .systemFont(ofSize: 12, weight: .semibold)
-        chartTitle.alignment = .left
-        stack.addArrangedSubview(chartTitle)
-        chartTitle.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-
+        chartTitle.font = .systemFont(ofSize: 14, weight: .semibold)
+        let chartHeader = NSStackView(views: [chartTitle, NSView(), self.windowControl])
+        chartHeader.orientation = .horizontal
+        chartHeader.alignment = .centerY
         self.chart.translatesAutoresizingMaskIntoConstraints = false
-        self.chart.heightAnchor.constraint(equalToConstant: 190).isActive = true
-        stack.addArrangedSubview(self.chart)
-        self.chart.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        let chartStack = FlippedStackView(views: [chartHeader, self.chart])
+        chartStack.orientation = .vertical
+        chartStack.alignment = .width
+        chartStack.spacing = 8
+        let chartCard = self.card(containing: chartStack, identifier: "live-chart-card")
+        chartCard.heightAnchor.constraint(equalToConstant: 218).isActive = true
+        stack.addArrangedSubview(chartCard)
 
         let activeTitle = NSTextField(labelWithString: localizedString("Active processes"))
-        activeTitle.font = .systemFont(ofSize: 12, weight: .semibold)
-        activeTitle.alignment = .left
-        stack.addArrangedSubview(activeTitle)
-        activeTitle.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-
+        activeTitle.font = .systemFont(ofSize: 14, weight: .semibold)
+        let activeHelp = NSTextField(labelWithString: localizedString("Sorted by current total rate"))
+        activeHelp.font = .systemFont(ofSize: 11)
+        activeHelp.textColor = .secondaryLabelColor
+        let activeHeader = NSStackView(views: [activeTitle, NSView(), activeHelp])
+        activeHeader.orientation = .horizontal
+        activeHeader.alignment = .centerY
         self.apps.translatesAutoresizingMaskIntoConstraints = false
-        self.apps.heightAnchor.constraint(equalToConstant: 150).isActive = true
-        stack.addArrangedSubview(self.apps)
-        self.apps.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        let activeStack = FlippedStackView(views: [activeHeader, self.apps])
+        activeStack.orientation = .vertical
+        activeStack.alignment = .width
+        activeStack.spacing = 7
+        let activeCard = self.card(containing: activeStack, identifier: "live-active-processes")
+        activeCard.heightAnchor.constraint(equalToConstant: 174).isActive = true
+        stack.addArrangedSubview(activeCard)
 
-        stack.addSubview(cards, positioned: .above, relativeTo: nil)
-        stack.addSubview(controls, positioned: .above, relativeTo: nil)
-        stack.addSubview(chartTitle, positioned: .above, relativeTo: nil)
-        stack.addSubview(activeTitle, positioned: .above, relativeTo: nil)
+        [rateCard, chartCard, activeCard].forEach { $0.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        self.updateCardAppearance()
     }
 
-    private func rateCard(title: String, value: NSTextField, color: NSColor) -> NSView {
+    private func card(containing content: NSView, identifier: String) -> NSView {
+        let card = NSView()
+        card.identifier = NSUserInterfaceItemIdentifier(identifier)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 10
+        content.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12)
+        ])
+        self.appearanceCards.append(card)
+        return card
+    }
+
+    private func rateMetric(title: String, value: NSTextField, color: NSColor) -> NSView {
         let titleField = NSTextField(labelWithString: title)
         titleField.textColor = .secondaryLabelColor
         titleField.font = .systemFont(ofSize: 11)
-        value.font = .systemFont(ofSize: 18, weight: .semibold)
+        value.font = .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
         value.textColor = color
-        let stack = NSStackView(views: [titleField, value])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 3
-        stack.edgeInsets = NSEdgeInsets(top: 9, left: 11, bottom: 9, right: 11)
-        stack.wantsLayer = true
-        stack.layer?.cornerRadius = 8
-        stack.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        return stack
+        let metric = NSStackView(views: [titleField, value])
+        metric.orientation = .vertical
+        metric.alignment = .leading
+        metric.spacing = 5
+        return metric
+    }
+
+    private func updateCardAppearance() {
+        self.appearanceCards.forEach { $0.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor }
     }
 
     private func updateFocusControl(_ applications: [ApplicationTrafficSummary]) {
@@ -844,16 +866,10 @@ internal final class LiveTrafficView: NSView {
         self.reload()
     }
 
-    private func rate(_ bytes: UInt64) -> String {
-        Units(bytes: Int64(bytes)).getReadableMemory() + "/s"
-    }
+    private func rate(_ bytes: UInt64) -> String { Units(bytes: Int64(bytes)).getReadableMemory() + "/s" }
 
     private func windowTitle(_ window: LiveTrafficWindow) -> String {
-        switch window {
-        case .sixtySeconds: return "60s"
-        case .fiveMinutes: return "5m"
-        case .fifteenMinutes: return "15m"
-        }
+        switch window { case .sixtySeconds: return "60s"; case .fiveMinutes: return "5m"; case .fifteenMinutes: return "15m" }
     }
 }
 
@@ -994,7 +1010,7 @@ internal final class LiveTrafficChartView: NSView {
         NSColor.systemBlue.setStroke()
         download.lineWidth = 1.5
         download.stroke()
-        NSColor.systemRed.setStroke()
+        NSColor.systemOrange.setStroke()
         upload.lineWidth = 1.5
         upload.stroke()
     }
@@ -1032,10 +1048,15 @@ internal final class LiveTrafficAppsView: NSView {
             let rect = CGRect(x: 0, y: CGFloat(index) * (rowHeight + 4), width: self.bounds.width, height: rowHeight)
             NSColor.controlBackgroundColor.setFill()
             NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
-            self.iconResolver.icon(for: item.identity).draw(
+            let identity = item.processes.first?.identity ?? item.identity
+            self.iconResolver.icon(for: identity).draw(
                 in: CGRect(x: rect.minX + 9, y: rect.minY + 8, width: 16, height: 16)
             )
-            (item.identity.displayName as NSString).draw(
+            let route = item.routeContexts.first.map {
+                localizedString(TrafficRouteClassifier.label(for: $0, systemProxyConfigured: $0.systemProxyConfigured))
+            }
+            let name = route.map { "\(item.identity.displayName)  ·  \($0)" } ?? item.identity.displayName
+            (name as NSString).draw(
                 at: CGPoint(x: 31, y: rect.minY + 8),
                 withAttributes: [.foregroundColor: NSColor.labelColor, .font: NSFont.systemFont(ofSize: 11, weight: .medium)]
             )
