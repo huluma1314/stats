@@ -3903,6 +3903,34 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(store.load().refreshMode, .manual)
     }
 
+    func testHistoryCardsRefreshLayerColorsWhenAppearanceChanges() throws {
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let view = TrafficAnalysisView(
+            engine: TrafficAnalyticsEngine(repository: repository),
+            repository: repository
+        )
+        let card = try XCTUnwrap(self.descendants(of: view).first {
+            $0.identifier?.rawValue == "history-timeline-card"
+        })
+        let aqua = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+
+        view.appearance = aqua
+        view.viewDidChangeEffectiveAppearance()
+        let lightColor = try XCTUnwrap(card.layer?.backgroundColor)
+        var expectedLight: CGColor?
+        aqua.performAsCurrentDrawingAppearance { expectedLight = NSColor.controlBackgroundColor.cgColor }
+        XCTAssertEqual(lightColor, expectedLight)
+
+        view.appearance = dark
+        view.viewDidChangeEffectiveAppearance()
+        let darkColor = try XCTUnwrap(card.layer?.backgroundColor)
+        var expectedDark: CGColor?
+        dark.performAsCurrentDrawingAppearance { expectedDark = NSColor.controlBackgroundColor.cgColor }
+        XCTAssertEqual(darkColor, expectedDark)
+        XCTAssertNotEqual(lightColor, darkColor)
+    }
+
     private func waitUntil(timeout: TimeInterval = 1, condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {

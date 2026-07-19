@@ -37,6 +37,7 @@ internal final class TrafficAnalysisView: NSView {
     private let detail: ApplicationDetailView
     private let contentStack = FlippedStackView()
     private let secondaryOptionsRow = NSStackView()
+    private var appearanceCards: [NSView] = []
 
     init(
         engine: TrafficAnalyticsEngine,
@@ -332,6 +333,11 @@ internal final class TrafficAnalysisView: NSView {
         }
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        self.updateAppearanceColors()
+    }
+
     private func summaryCard(title: String, field: NSTextField, identifier: String) -> NSView {
         let titleField = NSTextField(labelWithString: title)
         titleField.font = .systemFont(ofSize: 11, weight: .medium)
@@ -343,9 +349,10 @@ internal final class TrafficAnalysisView: NSView {
         box.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
         box.wantsLayer = true
         box.layer?.cornerRadius = 8
-        box.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         box.identifier = NSUserInterfaceItemIdentifier(identifier)
         box.heightAnchor.constraint(equalToConstant: 72).isActive = true
+        self.appearanceCards.append(box)
+        self.updateAppearanceColors()
         return box
     }
 
@@ -355,7 +362,6 @@ internal final class TrafficAnalysisView: NSView {
         card.identifier = NSUserInterfaceItemIdentifier(identifier)
         card.wantsLayer = true
         card.layer?.cornerRadius = 10
-        card.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         content.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(content)
         NSLayoutConstraint.activate([
@@ -364,7 +370,16 @@ internal final class TrafficAnalysisView: NSView {
             content.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
             content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12)
         ])
+        self.appearanceCards.append(card)
+        self.updateAppearanceColors()
         return card
+    }
+
+    private func updateAppearanceColors() {
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            let backgroundColor = NSColor.controlBackgroundColor.cgColor
+            self.appearanceCards.forEach { $0.layer?.backgroundColor = backgroundColor }
+        }
     }
 
     private func reloadNetworkMenu() {
