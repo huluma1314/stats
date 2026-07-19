@@ -171,7 +171,7 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
         let enforcement = UnavailableNetworkRuleEnforcer().capability
         let enforcementText: String
         if case .unavailable(let reason) = enforcement {
-            enforcementText = reason.message
+            enforcementText = localizedString(reason.message)
         } else {
             enforcementText = localizedString("Network controls are available on this build.")
         }

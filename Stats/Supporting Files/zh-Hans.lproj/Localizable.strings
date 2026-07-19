@@ -602,6 +602,8 @@
 "This permanently deletes local traffic analytics history." = "这将永久删除本机流量分析历史。";
 "Network controls are available on this build." = "当前构建支持网络控制。";
 "Block/throttle requires Network Extension entitlement." = "断网/限速需要 Network Extension 签名权限。";
+"This build is not signed with a Network Extension entitlement." = "当前构建未包含 Network Extension 签名权限。";
+"This system version cannot host the required Network Extension." = "当前系统版本无法运行所需的 Network Extension。";
 "Observed networks" = "已发现的网络";
 "No observed networks" = "尚未发现网络";
 "Network alias" = "网络别名";

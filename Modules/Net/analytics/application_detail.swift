@@ -74,7 +74,7 @@ internal final class ApplicationDetailView: NSView {
         case .available:
             self.enforcementLabel.stringValue = localizedString("Network controls are available on this build.")
         case .unavailable(let reason):
-            self.enforcementLabel.stringValue = "\(localizedString("Block/throttle requires Network Extension entitlement.") ) \(reason.message)"
+            self.enforcementLabel.stringValue = "\(localizedString("Block/throttle requires Network Extension entitlement.") ) \(localizedString(reason.message))"
         }
         self.loadRule(applicationID: summary.identity.id)
     }
@@ -283,7 +283,7 @@ internal final class ApplicationDetailView: NSView {
         if rule.action == .notify {
             self.enforcementLabel.stringValue = localizedString("Notify rule is active")
         } else if case .unavailable(let reason) = self.enforcer.capability {
-            self.enforcementLabel.stringValue = "\(localizedString("Rule saved but inactive")): \(reason.message)"
+            self.enforcementLabel.stringValue = "\(localizedString("Rule saved but inactive")): \(localizedString(reason.message))"
         } else {
             self.enforcementLabel.stringValue = localizedString("Rule saved; press Apply rule to activate")
         }

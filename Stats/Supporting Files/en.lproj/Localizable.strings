@@ -602,6 +602,8 @@
 "This permanently deletes local traffic analytics history." = "This permanently deletes local traffic analytics history.";
 "Network controls are available on this build." = "Network controls are available on this build.";
 "Block/throttle requires Network Extension entitlement." = "Block/throttle requires Network Extension entitlement.";
+"This build is not signed with a Network Extension entitlement." = "This build is not signed with a Network Extension entitlement.";
+"This system version cannot host the required Network Extension." = "This system version cannot host the required Network Extension.";
 "Observed networks" = "Observed networks";
 "No observed networks" = "No observed networks";
 "Network alias" = "Network alias";
