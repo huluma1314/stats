@@ -123,6 +123,9 @@ public enum TrafficChartGeometry {
 }
 
 internal final class TrafficTimelineChartView: NSView {
+    var showDownload = true { didSet { self.needsDisplay = true } }
+    var showUpload = true { didSet { self.needsDisplay = true } }
+    var showAlertMarkers = true { didSet { self.needsDisplay = true } }
     var points: [ChartPoint] = [] {
         didSet { self.needsDisplay = true }
     }
@@ -180,18 +183,21 @@ internal final class TrafficTimelineChartView: NSView {
 
         downloadFill.addLine(to: CGPoint(x: plot.maxX, y: plot.maxY))
         downloadFill.closeSubpath()
-        context.setFillColor(NSColor.systemBlue.withAlphaComponent(0.10).cgColor)
-        context.addPath(downloadFill)
-        context.fillPath()
+        if self.showDownload {
+            context.setFillColor(NSColor.systemBlue.withAlphaComponent(0.10).cgColor)
+            context.addPath(downloadFill)
+            context.fillPath()
+            context.setStrokeColor(NSColor.systemBlue.cgColor)
+            context.setLineWidth(1.5)
+            context.addPath(downloadPath)
+            context.strokePath()
+        }
 
-        context.setStrokeColor(NSColor.systemBlue.cgColor)
-        context.setLineWidth(1.5)
-        context.addPath(downloadPath)
-        context.strokePath()
-
-        context.setStrokeColor(NSColor.systemRed.cgColor)
-        context.addPath(uploadPath)
-        context.strokePath()
+        if self.showUpload {
+            context.setStrokeColor(NSColor.systemRed.cgColor)
+            context.addPath(uploadPath)
+            context.strokePath()
+        }
 
         if let start = self.dragStart, let current = self.dragCurrent {
             let rect = TrafficChartGeometry.normalizeSelection(startX: start.x, endX: current.x, bounds: plot)
@@ -199,7 +205,7 @@ internal final class TrafficTimelineChartView: NSView {
             context.fill(rect)
         }
 
-        self.drawAlertMarkers(in: plot, context: context)
+        if self.showAlertMarkers { self.drawAlertMarkers(in: plot, context: context) }
         self.drawHover(in: plot)
     }
 

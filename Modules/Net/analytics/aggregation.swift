@@ -366,7 +366,9 @@ public enum TrafficAggregation {
                         download: existing.delta.download + sample.delta.download,
                         upload: existing.delta.upload + sample.delta.upload
                     ),
-                    peakBytesPerSecond: max(existing.peakBytesPerSecond, sample.peakBytesPerSecond)
+                    peakBytesPerSecond: max(existing.peakBytesPerSecond, sample.peakBytesPerSecond),
+                    routeContext: self.mergedRoute(existing.routeContext, sample.routeContext),
+                    processIdentity: existing.processIdentity ?? sample.processIdentity
                 )
                 grouped[key] = existing
             } else {
@@ -377,7 +379,9 @@ public enum TrafficAggregation {
                     processID: sample.processID,
                     processName: sample.processName,
                     delta: sample.delta,
-                    peakBytesPerSecond: sample.peakBytesPerSecond
+                    peakBytesPerSecond: sample.peakBytesPerSecond,
+                    routeContext: sample.routeContext,
+                    processIdentity: sample.processIdentity
                 )
             }
         }
@@ -407,7 +411,8 @@ public enum TrafficAggregation {
                     download: record.sample.delta.download,
                     upload: record.sample.delta.upload,
                     peakBytesPerSecond: record.sample.peakBytesPerSecond,
-                    sampleCount: record.sampleCount
+                    sampleCount: record.sampleCount,
+                    identity: record.sample.processIdentity
                 )
             ]
 
@@ -424,7 +429,9 @@ public enum TrafficAggregation {
                         download: group.sample.delta.download + record.sample.delta.download,
                         upload: group.sample.delta.upload + record.sample.delta.upload
                     ),
-                    peakBytesPerSecond: max(group.sample.peakBytesPerSecond, record.sample.peakBytesPerSecond)
+                    peakBytesPerSecond: max(group.sample.peakBytesPerSecond, record.sample.peakBytesPerSecond),
+                    routeContext: self.mergedRoute(group.sample.routeContext, record.sample.routeContext),
+                    processIdentity: group.sample.processIdentity ?? record.sample.processIdentity
                 )
                 group.sampleCount = self.mergedCount(group.sampleCount, record.sampleCount)
                 for process in sourceProcesses {
@@ -436,7 +443,8 @@ public enum TrafficAggregation {
                             download: existing.download + process.download,
                             upload: existing.upload + process.upload,
                             peakBytesPerSecond: max(existing.peakBytesPerSecond, process.peakBytesPerSecond),
-                            sampleCount: self.mergedCount(existing.sampleCount, process.sampleCount)
+                            sampleCount: self.mergedCount(existing.sampleCount, process.sampleCount),
+                            identity: existing.identity ?? process.identity
                         )
                     } else {
                         group.processes[process.processDiscriminator] = process
@@ -480,7 +488,9 @@ public enum TrafficAggregation {
                 download: existing.sample.delta.download + contribution.sample.delta.download,
                 upload: existing.sample.delta.upload + contribution.sample.delta.upload
             ),
-            peakBytesPerSecond: max(existing.sample.peakBytesPerSecond, contribution.sample.peakBytesPerSecond)
+            peakBytesPerSecond: max(existing.sample.peakBytesPerSecond, contribution.sample.peakBytesPerSecond),
+            routeContext: self.mergedRoute(existing.sample.routeContext, contribution.sample.routeContext),
+            processIdentity: existing.sample.processIdentity ?? contribution.sample.processIdentity
         )
         var processes: [String: StoredProcessTrafficSummary] = [:]
         for process in self.processSummaries(for: existing) + self.processSummaries(for: contribution) {
@@ -492,7 +502,8 @@ public enum TrafficAggregation {
                     download: current.download + process.download,
                     upload: current.upload + process.upload,
                     peakBytesPerSecond: max(current.peakBytesPerSecond, process.peakBytesPerSecond),
-                    sampleCount: self.mergedCount(current.sampleCount, process.sampleCount)
+                    sampleCount: self.mergedCount(current.sampleCount, process.sampleCount),
+                    identity: current.identity ?? process.identity
                 )
             } else {
                 processes[process.processDiscriminator] = process
@@ -508,6 +519,12 @@ public enum TrafficAggregation {
         )
     }
 
+    private static func mergedRoute(_ lhs: TrafficRouteContext, _ rhs: TrafficRouteContext) -> TrafficRouteContext {
+        if lhs.kind == .tunnel || rhs.kind == .tunnel { return lhs.kind == .tunnel ? lhs : rhs }
+        if lhs.kind == .systemProxy || rhs.kind == .systemProxy { return lhs.kind == .systemProxy ? lhs : rhs }
+        return lhs
+    }
+
     private static func processSummaries(for record: StoredTrafficRecord) -> [StoredProcessTrafficSummary] {
         record.processSummaries ?? [
             StoredProcessTrafficSummary(
@@ -517,7 +534,8 @@ public enum TrafficAggregation {
                 download: record.sample.delta.download,
                 upload: record.sample.delta.upload,
                 peakBytesPerSecond: record.sample.peakBytesPerSecond,
-                sampleCount: record.sampleCount
+                sampleCount: record.sampleCount,
+                identity: record.sample.processIdentity
             )
         ]
     }

@@ -574,6 +574,16 @@
 "Back" = "返回";
 "Export" = "导出";
 "Export failed" = "导出失败";
+"Show download" = "显示下载";
+"Show upload" = "显示上传";
+"Group by process" = "按进程分组";
+"Show proxy labels" = "显示代理标签";
+"Show alert markers" = "显示告警标记";
+"Include local network" = "包含本地网络";
+"Direct" = "直连";
+"System proxy configured" = "已配置系统代理";
+"System proxy forwarded" = "经系统代理转发";
+"Tunnel" = "隧道";
 "Billing cycle day" = "结算日";
 "No quota" = "无配额";
 "Insufficient data" = "数据不足";

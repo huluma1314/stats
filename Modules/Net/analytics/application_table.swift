@@ -7,7 +7,7 @@ import Cocoa
 import Foundation
 import Kit
 
-public enum ApplicationTrafficSortKey: String, CaseIterable {
+public enum ApplicationTrafficSortKey: String, CaseIterable, Codable {
     case name
     case download
     case upload
@@ -56,6 +56,7 @@ public enum ApplicationTrafficPresenter {
 }
 
 internal final class ApplicationTrafficTableController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+    private let iconResolver: ApplicationIconResolving
     private let root = NSStackView()
     private let outlineView = NSOutlineView()
     private let scrollView = NSScrollView()
@@ -64,17 +65,33 @@ internal final class ApplicationTrafficTableController: NSObject, NSOutlineViewD
     private var items: [ApplicationTrafficSummary] = []
     private var sortKey: ApplicationTrafficSortKey = .total
     private var ascending = false
+    private var groupByProcess = false
+    private var showProxyLabels = true
     var onSelect: ((ApplicationTrafficSummary?) -> Void)?
+    var onStateChange: ((String, ApplicationTrafficSortKey, Bool) -> Void)?
 
-    override init() {
+    init(iconResolver: ApplicationIconResolving = ApplicationIconResolver()) {
+        self.iconResolver = iconResolver
         super.init()
         self.configure()
     }
 
     func rootView() -> NSView { self.root }
 
-    func update(_ ranking: [ApplicationTrafficSummary]) {
+    func update(
+        _ ranking: [ApplicationTrafficSummary],
+        search: String? = nil,
+        sortKey: ApplicationTrafficSortKey? = nil,
+        ascending: Bool? = nil,
+        groupByProcess: Bool? = nil,
+        showProxyLabels: Bool? = nil
+    ) {
         self.source = ranking
+        if let search { self.searchField.stringValue = search }
+        if let sortKey { self.sortKey = sortKey }
+        if let ascending { self.ascending = ascending }
+        if let groupByProcess { self.groupByProcess = groupByProcess }
+        if let showProxyLabels { self.showProxyLabels = showProxyLabels }
         self.rebuild()
     }
 
@@ -126,10 +143,14 @@ internal final class ApplicationTrafficTableController: NSObject, NSOutlineViewD
             ascending: self.ascending
         )
         self.outlineView.reloadData()
+        if self.groupByProcess {
+            self.items.forEach { self.outlineView.expandItem($0) }
+        }
     }
 
     @objc private func searchChanged() {
         self.rebuild()
+        self.onStateChange?(self.searchField.stringValue, self.sortKey, self.ascending)
     }
 
     @objc private func rowActivated() {
@@ -156,7 +177,24 @@ internal final class ApplicationTrafficTableController: NSObject, NSOutlineViewD
         let text = NSTextField(labelWithString: self.text(for: item, column: id))
         text.font = .systemFont(ofSize: 11)
         text.lineBreakMode = .byTruncatingTail
-        return text
+        guard id == "name" else { return text }
+        let owner = (item as? ApplicationTrafficSummary)
+            ?? (outlineView.parent(forItem: item) as? ApplicationTrafficSummary)
+        guard let owner else { return text }
+        let identity = (item as? ProcessTrafficSummary)?.identity ?? owner.identity
+        let imageView = NSImageView(image: self.iconResolver.icon(for: identity))
+        imageView.imageScaling = .scaleProportionallyDown
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            imageView.widthAnchor.constraint(equalToConstant: 16),
+            imageView.heightAnchor.constraint(equalToConstant: 16)
+        ])
+        let row = NSStackView(views: [imageView, text])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+        row.toolTip = owner.identity.executablePath ?? owner.identity.bundleIdentifier
+        return row
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
@@ -171,7 +209,14 @@ internal final class ApplicationTrafficTableController: NSObject, NSOutlineViewD
             case "upload": return Units(bytes: Int64(summary.upload)).getReadableMemory()
             case "peak": return Units(bytes: Int64(summary.peakBytesPerSecond)).getReadableMemory() + "/s"
             case "total": return Units(bytes: Int64(summary.total)).getReadableMemory()
-            default: return summary.identity.displayName
+            default:
+                guard self.showProxyLabels else { return summary.identity.displayName }
+                let labels = summary.routeContexts.filter {
+                    $0.kind != .direct || $0.systemProxyConfigured
+                }.map {
+                    localizedString(TrafficRouteClassifier.label(for: $0, systemProxyConfigured: $0.systemProxyConfigured))
+                }
+                return ([summary.identity.displayName] + Array(Set(labels)).sorted()).joined(separator: " · ")
             }
         }
         if let process = item as? ProcessTrafficSummary {

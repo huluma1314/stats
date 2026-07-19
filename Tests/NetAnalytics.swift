@@ -837,7 +837,7 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertTrue(csv.contains("\"App, A\""))
         let data = try TrafficExporter.json(from: snapshot, networkFilter: .wifi)
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        XCTAssertEqual(object?["schemaVersion"] as? Int, 1)
+        XCTAssertEqual(object?["schemaVersion"] as? Int, 2)
         XCTAssertEqual(object?["total"] as? UInt64, 35)
     }
 
@@ -1469,7 +1469,8 @@ final class NetAnalyticsTests: XCTestCase {
                 processName: "Helper A",
                 download: 15,
                 upload: 5,
-                peakBytesPerSecond: 11
+                peakBytesPerSecond: 11,
+                sampleCount: 2
             ),
             ProcessTrafficSummary(
                 processDiscriminator: helperB.processDiscriminator,
@@ -1477,7 +1478,8 @@ final class NetAnalyticsTests: XCTestCase {
                 processName: "Helper B",
                 download: 20,
                 upload: 2,
-                peakBytesPerSecond: 22
+                peakBytesPerSecond: 22,
+                sampleCount: 1
             )
         ])
 
@@ -3295,6 +3297,178 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertTrue(repository.trafficAlerts().isEmpty)
     }
 
+
+    func testExportV2IncludesSelectionNetworkAliasProcessesAlertsAndRouteContext() throws {
+        let network = NetworkIdentity(id: "wifi:home", displayName: "Home", interfaceName: "en0", kind: .wifi)
+        let app = self.identity
+        let snapshot = TrafficAnalyticsSnapshot(
+            range: .today,
+            start: Date(timeIntervalSince1970: 0),
+            end: Date(timeIntervalSince1970: 100),
+            download: 10,
+            upload: 5,
+            total: 15,
+            buckets: [],
+            ranking: [ApplicationTrafficSummary(identity: app, download: 10, upload: 5, peakBytesPerSecond: 15, processes: [ProcessTrafficSummary(processDiscriminator: "app|1|1", processID: 1, processName: "Example", download: 10, upload: 5, peakBytesPerSecond: 15)])],
+            forecast: nil,
+            alerts: [TrafficAlertEvent(kind: .quota, timestamp: Date(timeIntervalSince1970: 50), message: "quota")]
+        )
+        let context = TrafficExportContext(networkID: network.id, networkAlias: "Apartment", network: network, chartInterval: DateInterval(start: Date(timeIntervalSince1970: 10), end: Date(timeIntervalSince1970: 90)), groupByProcess: true, routeContext: TrafficRouteContext(kind: .tunnel, proxyHost: "127.0.0.1", proxyPort: 1080))
+        let data = try TrafficExporter.json(from: snapshot, networkFilter: nil, context: context)
+        let json = String(data: data, encoding: .utf8)!
+        XCTAssertTrue(json.contains("schemaVersion"))
+        XCTAssertTrue(json.contains("Apartment"))
+        XCTAssertTrue(json.contains("processes"))
+        XCTAssertTrue(json.contains("alerts"))
+        XCTAssertTrue(json.contains("tunnel"))
+    }
+
+    func testExportTotalsMatchTheVisibleSnapshotForGroupedAndExpandedRows() {
+        let app = self.identity
+        let snapshot = TrafficAnalyticsSnapshot(range: .today, start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 100), download: 10, upload: 5, total: 15, buckets: [], ranking: [ApplicationTrafficSummary(identity: app, download: 10, upload: 5, peakBytesPerSecond: 15, processes: [])], forecast: nil)
+        let csv = TrafficExporter.csv(from: snapshot, networkFilter: nil)
+        let rows = csv.split(separator: "\n").map(String.init)
+        let header = rows[0].split(separator: ",").map(String.init)
+        let values = rows[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        XCTAssertEqual(values[header.firstIndex(of: "download")!], "10")
+        XCTAssertEqual(values[header.firstIndex(of: "upload")!], "5")
+        XCTAssertEqual(values[header.firstIndex(of: "total")!], "15")
+    }
+
+    func testProxyRouteLabelDoesNotReassignBytesToAnotherApplication() {
+        let direct = TrafficRouteClassifier.context(systemProxyConfigured: true, observedProxyApplication: false, observedTunnelInterface: false)
+        XCTAssertEqual(direct.kind, .direct)
+        XCTAssertEqual(TrafficRouteClassifier.label(for: direct, systemProxyConfigured: true), "System proxy configured")
+    }
+
+    func testDirectTrafficWithSystemProxyConfiguredIsNotClaimedAsForwarded() {
+        let knownProxy = TrafficRouteClassifier.context(systemProxyConfigured: true, observedProxyApplication: true, observedTunnelInterface: false)
+        XCTAssertEqual(knownProxy.kind, .systemProxy)
+        let tunnel = TrafficRouteClassifier.context(systemProxyConfigured: false, observedProxyApplication: false, observedTunnelInterface: true)
+        XCTAssertEqual(tunnel.kind, .tunnel)
+    }
+
+    func testCoordinatorPersistsConfiguredSystemProxyAsDirectDescriptiveMetadata() {
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 100))
+        let coordinator = TrafficAnalyticsCoordinator(
+            repository: repository,
+            clock: clock,
+            systemProxyProvider: FixedSystemProxyProvider(configuration: SystemProxyConfiguration(
+                isConfigured: true,
+                host: "127.0.0.1",
+                port: 7890
+            ))
+        )
+        coordinator.start()
+        coordinator.ingest(counters: [ProcessTrafficCounter(
+            identity: self.identity,
+            processID: 999_999,
+            processStartToken: 1,
+            processDiscriminator: "direct|999999|1",
+            interfaceName: "en0",
+            isDelta: true,
+            download: 10,
+            upload: 5
+        )])
+        _ = coordinator.stop()
+        let samples = repository.fetch(TrafficHistoryQuery(
+            level: .second,
+            start: Date(timeIntervalSince1970: 99),
+            end: Date(timeIntervalSince1970: 101)
+        ))
+        guard let sample = samples.first else { return XCTFail("Expected persisted sample") }
+        XCTAssertEqual(sample.routeContext.kind, .direct)
+        XCTAssertEqual(sample.routeContext.systemProxyConfigured, true)
+        XCTAssertEqual(TrafficRouteClassifier.label(for: sample.routeContext, systemProxyConfigured: false), "System proxy configured")
+    }
+
+    func testCSVAndJSONUseTheSameApplicationRouteAndSampleMetadata() throws {
+        let route = TrafficRouteContext(kind: .direct, systemProxyConfigured: true)
+        let app = ApplicationTrafficSummary(
+            identity: self.identity,
+            download: 10,
+            upload: 5,
+            peakBytesPerSecond: 15,
+            processes: [],
+            routeContexts: [route],
+            sampleCount: 3
+        )
+        let snapshot = TrafficAnalyticsSnapshot(
+            range: .today,
+            start: Date(timeIntervalSince1970: 0),
+            end: Date(timeIntervalSince1970: 100),
+            download: 10,
+            upload: 5,
+            total: 15,
+            buckets: [],
+            ranking: [app],
+            forecast: nil
+        )
+        let csv = TrafficExporter.csv(from: snapshot, networkFilter: nil)
+        XCTAssertTrue(csv.contains(",direct,,,application,"))
+        XCTAssertTrue(csv.contains(",15,3,"))
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let document = try decoder.decode(
+            TrafficExportDocument.self,
+            from: TrafficExporter.json(from: snapshot, networkFilter: nil)
+        )
+        XCTAssertEqual(document.applications[0].routeContext, route)
+        XCTAssertEqual(document.applications[0].sampleCount, 3)
+    }
+
+    func testIconResolverUsesBundleExecutableAndDefaultFallbackOrder() {
+        let provider = FakeApplicationIconProvider()
+        let resolver = ApplicationIconResolver(provider: provider)
+        provider.bundleImage = NSImage(size: NSSize(width: 16, height: 16))
+        XCTAssertTrue(resolver.icon(for: self.identity) === provider.bundleImage)
+        provider.bundleImage = nil
+        provider.executableImage = NSImage(size: NSSize(width: 16, height: 16))
+        let executableIdentity = ApplicationIdentity(id: "executable", displayName: "Executable", bundleIdentifier: nil, executablePath: "/tmp/executable")
+        XCTAssertTrue(resolver.icon(for: executableIdentity) === provider.executableImage)
+        provider.executableImage = nil
+        let defaultIdentity = ApplicationIdentity(id: "default", displayName: "Default", bundleIdentifier: nil, executablePath: nil)
+        XCTAssertTrue(resolver.icon(for: defaultIdentity) === provider.defaultImage)
+    }
+
+    func testIconResolverCachesOffTheQueryPath() {
+        let provider = FakeApplicationIconProvider()
+        let resolver = ApplicationIconResolver(provider: provider)
+        _ = resolver.icon(for: self.identity)
+        _ = resolver.icon(for: self.identity)
+        XCTAssertEqual(provider.lookupCount, 1)
+    }
+
+    func testChartOptionsAndGroupingPersistAcrossPreviewRecreation() {
+        let suite = "net-chart-options-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let store = TrafficSelectionStore(defaults: defaults)
+        var selection = TrafficSelection()
+        selection.groupByProcess = true
+        selection.showDownload = false
+        selection.showProxyLabels = true
+        store.save(selection)
+        XCTAssertEqual(store.load(), selection)
+    }
+
+    func testMinimumWidthKeepsRangeNetworkExportAndAlertControlsReachable() {
+        let view = TrafficAnalysisView(engine: TrafficAnalyticsEngine(repository: TrafficHistoryRepository(store: InMemoryTrafficStore())), repository: TrafficHistoryRepository(store: InMemoryTrafficStore()))
+        view.frame = NSRect(x: 0, y: 0, width: 420, height: 720)
+        view.layoutSubtreeIfNeeded()
+        let descendants = self.descendants(of: view)
+        let required = ["traffic-range", "traffic-network", "traffic-export", "traffic-alert-list", "traffic-refresh", "traffic-custom-range"]
+        for identifier in required {
+            let control = descendants.first { $0.identifier?.rawValue == identifier }
+            XCTAssertNotNil(control, identifier)
+            if let control {
+                XCTAssertFalse(control.isHidden, identifier)
+                XCTAssertFalse(control.visibleRect.isEmpty, identifier)
+            }
+        }
+    }
+
     private func waitUntil(timeout: TimeInterval = 1, condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -3437,6 +3611,23 @@ private struct FakeProcessMetadataProvider: ProcessMetadataProviding {
     }
 }
 
+
+
+private final class FakeApplicationIconProvider: ApplicationIconLookupProviding {
+    var bundleImage: NSImage?
+    var executableImage: NSImage?
+    let defaultImage = NSImage(size: NSSize(width: 16, height: 16))
+    var lookupCount = 0
+    func bundleIcon(for identity: ApplicationIdentity) -> NSImage? { lookupCount += 1; return bundleImage }
+    func executableIcon(for identity: ApplicationIdentity) -> NSImage? { executableImage }
+    func runningApplicationIcon(for identity: ApplicationIdentity) -> NSImage? { nil }
+    func defaultIcon() -> NSImage { defaultImage }
+}
+
+private struct FixedSystemProxyProvider: SystemProxyConfigurationProviding {
+    let configuration: SystemProxyConfiguration
+    func currentConfiguration() -> SystemProxyConfiguration { self.configuration }
+}
 
 private final class RecordingNetworkRuleEnforcer: NetworkRuleEnforcing {
     let capability: NetworkEnforcementCapability

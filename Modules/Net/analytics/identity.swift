@@ -76,6 +76,10 @@ public struct ApplicationIdentityResolver {
         return self.identity(from: metadata)
     }
 
+    public func processIdentity(processID: Int32, fallbackName: String) -> ApplicationIdentity {
+        self.identity(from: self.provider.metadata(for: processID, fallbackName: fallbackName))
+    }
+
     public func group(
         counters: [ProcessTrafficCounter]
     ) -> [ApplicationTrafficSummary] {
@@ -92,7 +96,8 @@ public struct ApplicationIdentityResolver {
                 processName: counter.identity.displayName,
                 download: counter.download,
                 upload: counter.upload,
-                peakBytesPerSecond: counter.download + counter.upload
+                peakBytesPerSecond: counter.download + counter.upload,
+                identity: self.processIdentity(processID: counter.processID, fallbackName: counter.identity.displayName)
             )
             var bucket = buckets[identity.id] ?? (
                 identity: identity,

@@ -4,6 +4,45 @@
 //
 
 import Foundation
+import CFNetwork
+
+public struct SystemProxyConfiguration: Equatable {
+    public let isConfigured: Bool
+    public let host: String?
+    public let port: Int?
+
+    public init(isConfigured: Bool, host: String? = nil, port: Int? = nil) {
+        self.isConfigured = isConfigured
+        self.host = host
+        self.port = port
+    }
+}
+
+public protocol SystemProxyConfigurationProviding {
+    func currentConfiguration() -> SystemProxyConfiguration
+}
+
+public struct CFNetworkSystemProxyConfigurationProvider: SystemProxyConfigurationProviding {
+    public init() {}
+
+    public func currentConfiguration() -> SystemProxyConfiguration {
+        guard let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else {
+            return SystemProxyConfiguration(isConfigured: false)
+        }
+        for (enableKey, hostKey, portKey) in [
+            ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
+            ("HTTPEnable", "HTTPProxy", "HTTPPort"),
+            ("SOCKSEnable", "SOCKSProxy", "SOCKSPort")
+        ] where (settings[enableKey] as? NSNumber)?.boolValue == true {
+            return SystemProxyConfiguration(
+                isConfigured: true,
+                host: settings[hostKey] as? String,
+                port: (settings[portKey] as? NSNumber)?.intValue
+            )
+        }
+        return SystemProxyConfiguration(isConfigured: false)
+    }
+}
 
 public struct TrafficCollectorSnapshot: Equatable {
     public let samplesWritten: Int
@@ -104,6 +143,7 @@ public final class TrafficAnalyticsCoordinator {
     private let networkRegistry: NetworkRegistry
     private let runtimeRuleService: TrafficRuntimeRuleService
     private let runtimeAlertService: TrafficRuntimeAlertService
+    private let systemProxyProvider: SystemProxyConfigurationProviding
 
     private var previousCounters: [String: ProcessTrafficCounter] = [:]
     private var currentNetwork = NetworkIdentity(
@@ -133,7 +173,8 @@ public final class TrafficAnalyticsCoordinator {
         calendar: Calendar = .current,
         networkRegistry: NetworkRegistry = NetworkRegistry(),
         runtimeRuleService: TrafficRuntimeRuleService? = nil,
-        runtimeAlertService: TrafficRuntimeAlertService? = nil
+        runtimeAlertService: TrafficRuntimeAlertService? = nil,
+        systemProxyProvider: SystemProxyConfigurationProviding = CFNetworkSystemProxyConfigurationProvider()
     ) {
         self.repository = repository
         self.resolver = resolver
@@ -155,6 +196,7 @@ public final class TrafficAnalyticsCoordinator {
             preferencesStore: preferencesStore,
             clock: clock
         )
+        self.systemProxyProvider = systemProxyProvider
     }
 
     public func start() {
@@ -202,12 +244,17 @@ public final class TrafficAnalyticsCoordinator {
 
             var produced: [TrafficSample] = []
             let timestamp = self.clock.now()
+            let systemProxy = self.systemProxyProvider.currentConfiguration()
             var next: [String: ProcessTrafficCounter] = [:]
 
             for counter in counters {
                 let interfaceName = counter.interfaceName
                 let lifetime = "\(counter.processDiscriminator)|\(interfaceName ?? "")"
                 let identity = self.resolver.identity(
+                    processID: counter.processID,
+                    fallbackName: counter.identity.displayName
+                )
+                let processIdentity = self.resolver.processIdentity(
                     processID: counter.processID,
                     fallbackName: counter.identity.displayName
                 )
@@ -234,6 +281,13 @@ public final class TrafficAnalyticsCoordinator {
                 guard delta.total > 0 else { continue }
 
                 let network = interfaceName.map { self.networkIdentity(interfaceName: $0) } ?? self.currentNetwork
+                let routeContext = TrafficRouteClassifier.context(
+                    systemProxyConfigured: systemProxy.isConfigured,
+                    observedProxyApplication: Self.isKnownProxyApplication(identity),
+                    observedTunnelInterface: network.kind == .tunnel,
+                    proxyHost: systemProxy.host,
+                    proxyPort: systemProxy.port
+                )
                 produced.append(
                     TrafficSample(
                         timestamp: timestamp,
@@ -244,7 +298,9 @@ public final class TrafficAnalyticsCoordinator {
                         processStartToken: counter.processStartToken,
                         processDiscriminator: counter.processDiscriminator,
                         delta: delta,
-                        peakBytesPerSecond: delta.total
+                        peakBytesPerSecond: delta.total,
+                        routeContext: routeContext,
+                        processIdentity: processIdentity
                     )
                 )
             }
@@ -351,6 +407,14 @@ public final class TrafficAnalyticsCoordinator {
             return .wifi
         }
         return .other
+    }
+
+    public static func isKnownProxyApplication(_ identity: ApplicationIdentity) -> Bool {
+        let value = [identity.displayName, identity.bundleIdentifier, identity.executablePath]
+            .compactMap { $0?.lowercased() }
+            .joined(separator: " ")
+        return ["surge", "clash", "mihomo", "v2ray", "xray", "sing-box", "privoxy", "charles", "proxyman"]
+            .contains { value.contains($0) }
     }
 
     private func networkIdentity(interfaceName: String) -> NetworkIdentity {

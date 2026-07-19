@@ -28,6 +28,7 @@ public struct StoredProcessTrafficSummary: Codable, Equatable {
     public let upload: UInt64
     public let peakBytesPerSecond: UInt64
     public let sampleCount: Int?
+    public let identity: ApplicationIdentity?
 
     public init(
         processDiscriminator: String,
@@ -36,7 +37,8 @@ public struct StoredProcessTrafficSummary: Codable, Equatable {
         download: UInt64,
         upload: UInt64,
         peakBytesPerSecond: UInt64,
-        sampleCount: Int?
+        sampleCount: Int?,
+        identity: ApplicationIdentity? = nil
     ) {
         self.processDiscriminator = processDiscriminator
         self.processID = processID
@@ -45,6 +47,7 @@ public struct StoredProcessTrafficSummary: Codable, Equatable {
         self.upload = upload
         self.peakBytesPerSecond = peakBytesPerSecond
         self.sampleCount = sampleCount
+        self.identity = identity
     }
 }
 

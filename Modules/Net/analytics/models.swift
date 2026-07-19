@@ -111,6 +111,74 @@ public struct NetworkIdentity: Codable, Equatable, Hashable {
     }
 }
 
+public enum TrafficRouteKind: String, Codable {
+    case direct
+    case systemProxy
+    case tunnel
+}
+
+public struct TrafficRouteContext: Codable, Equatable {
+    public let kind: TrafficRouteKind
+    public let proxyHost: String?
+    public let proxyPort: Int?
+    public let systemProxyConfigured: Bool
+
+    public init(
+        kind: TrafficRouteKind,
+        proxyHost: String? = nil,
+        proxyPort: Int? = nil,
+        systemProxyConfigured: Bool = false
+    ) {
+        self.kind = kind
+        self.proxyHost = proxyHost
+        self.proxyPort = proxyPort
+        self.systemProxyConfigured = systemProxyConfigured
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, proxyHost, proxyPort, systemProxyConfigured }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.kind = try container.decode(TrafficRouteKind.self, forKey: .kind)
+        self.proxyHost = try container.decodeIfPresent(String.self, forKey: .proxyHost)
+        self.proxyPort = try container.decodeIfPresent(Int.self, forKey: .proxyPort)
+        self.systemProxyConfigured = try container.decodeIfPresent(Bool.self, forKey: .systemProxyConfigured) ?? false
+    }
+}
+
+public enum TrafficRouteClassifier {
+    public static func context(
+        systemProxyConfigured: Bool,
+        observedProxyApplication: Bool,
+        observedTunnelInterface: Bool,
+        proxyHost: String? = nil,
+        proxyPort: Int? = nil
+    ) -> TrafficRouteContext {
+        if observedTunnelInterface {
+            return TrafficRouteContext(kind: .tunnel, systemProxyConfigured: systemProxyConfigured)
+        }
+        if observedProxyApplication {
+            return TrafficRouteContext(
+                kind: .systemProxy,
+                proxyHost: proxyHost,
+                proxyPort: proxyPort,
+                systemProxyConfigured: systemProxyConfigured
+            )
+        }
+        // Configuration is descriptive metadata only; it never reassigns a direct sample.
+        _ = systemProxyConfigured
+        return TrafficRouteContext(kind: .direct, systemProxyConfigured: systemProxyConfigured)
+    }
+
+    public static func label(for context: TrafficRouteContext, systemProxyConfigured: Bool) -> String {
+        switch context.kind {
+        case .direct: return (systemProxyConfigured || context.systemProxyConfigured) ? "System proxy configured" : "Direct"
+        case .systemProxy: return "System proxy forwarded"
+        case .tunnel: return "Tunnel"
+        }
+    }
+}
+
 public struct TrafficSample: Codable, Equatable {
     public let timestamp: Date
     public let application: ApplicationIdentity
@@ -121,6 +189,8 @@ public struct TrafficSample: Codable, Equatable {
     public let processDiscriminator: String
     public let delta: TrafficDelta
     public let peakBytesPerSecond: UInt64
+    public let routeContext: TrafficRouteContext
+    public let processIdentity: ApplicationIdentity?
 
     public init(
         timestamp: Date,
@@ -131,7 +201,9 @@ public struct TrafficSample: Codable, Equatable {
         processStartToken: UInt64 = 0,
         processDiscriminator: String? = nil,
         delta: TrafficDelta,
-        peakBytesPerSecond: UInt64
+        peakBytesPerSecond: UInt64,
+        routeContext: TrafficRouteContext = TrafficRouteContext(kind: .direct),
+        processIdentity: ApplicationIdentity? = nil
     ) {
         self.timestamp = timestamp
         self.application = application
@@ -142,6 +214,8 @@ public struct TrafficSample: Codable, Equatable {
         self.processDiscriminator = processDiscriminator ?? "\(application.id)|\(processID)|\(processStartToken)"
         self.delta = delta
         self.peakBytesPerSecond = peakBytesPerSecond
+        self.routeContext = routeContext
+        self.processIdentity = processIdentity
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -154,6 +228,8 @@ public struct TrafficSample: Codable, Equatable {
         case processDiscriminator
         case delta
         case peakBytesPerSecond
+        case routeContext
+        case processIdentity
     }
 
     public init(from decoder: Decoder) throws {
@@ -168,6 +244,8 @@ public struct TrafficSample: Codable, Equatable {
             ?? "\(self.application.id)|\(self.processID)|\(self.processStartToken)"
         self.delta = try container.decode(TrafficDelta.self, forKey: .delta)
         self.peakBytesPerSecond = try container.decode(UInt64.self, forKey: .peakBytesPerSecond)
+        self.routeContext = try container.decodeIfPresent(TrafficRouteContext.self, forKey: .routeContext) ?? TrafficRouteContext(kind: .direct)
+        self.processIdentity = try container.decodeIfPresent(ApplicationIdentity.self, forKey: .processIdentity)
     }
 }
 
@@ -203,6 +281,8 @@ public struct ProcessTrafficSummary: Codable, Equatable {
     public let download: UInt64
     public let upload: UInt64
     public let peakBytesPerSecond: UInt64
+    public let sampleCount: Int?
+    public let identity: ApplicationIdentity?
 
     public init(
         processDiscriminator: String? = nil,
@@ -210,7 +290,9 @@ public struct ProcessTrafficSummary: Codable, Equatable {
         processName: String,
         download: UInt64,
         upload: UInt64,
-        peakBytesPerSecond: UInt64
+        peakBytesPerSecond: UInt64,
+        sampleCount: Int? = nil,
+        identity: ApplicationIdentity? = nil
     ) {
         self.processDiscriminator = processDiscriminator
         self.processID = processID
@@ -218,6 +300,24 @@ public struct ProcessTrafficSummary: Codable, Equatable {
         self.download = download
         self.upload = upload
         self.peakBytesPerSecond = peakBytesPerSecond
+        self.sampleCount = sampleCount
+        self.identity = identity
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case processDiscriminator, processID, processName, download, upload, peakBytesPerSecond, sampleCount, identity
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.processDiscriminator = try container.decodeIfPresent(String.self, forKey: .processDiscriminator)
+        self.processID = try container.decode(Int32.self, forKey: .processID)
+        self.processName = try container.decode(String.self, forKey: .processName)
+        self.download = try container.decode(UInt64.self, forKey: .download)
+        self.upload = try container.decode(UInt64.self, forKey: .upload)
+        self.peakBytesPerSecond = try container.decode(UInt64.self, forKey: .peakBytesPerSecond)
+        self.sampleCount = try container.decodeIfPresent(Int.self, forKey: .sampleCount)
+        self.identity = try container.decodeIfPresent(ApplicationIdentity.self, forKey: .identity)
     }
 }
 
@@ -227,6 +327,8 @@ public struct ApplicationTrafficSummary: Codable, Equatable {
     public let upload: UInt64
     public let peakBytesPerSecond: UInt64
     public let processes: [ProcessTrafficSummary]
+    public let routeContexts: [TrafficRouteContext]
+    public let sampleCount: Int?
 
     public var total: UInt64 { self.download + self.upload }
 
@@ -235,12 +337,31 @@ public struct ApplicationTrafficSummary: Codable, Equatable {
         download: UInt64,
         upload: UInt64,
         peakBytesPerSecond: UInt64,
-        processes: [ProcessTrafficSummary]
+        processes: [ProcessTrafficSummary],
+        routeContexts: [TrafficRouteContext] = [],
+        sampleCount: Int? = nil
     ) {
         self.identity = identity
         self.download = download
         self.upload = upload
         self.peakBytesPerSecond = peakBytesPerSecond
         self.processes = processes
+        self.routeContexts = routeContexts
+        self.sampleCount = sampleCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case identity, download, upload, peakBytesPerSecond, processes, routeContexts, sampleCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.identity = try container.decode(ApplicationIdentity.self, forKey: .identity)
+        self.download = try container.decode(UInt64.self, forKey: .download)
+        self.upload = try container.decode(UInt64.self, forKey: .upload)
+        self.peakBytesPerSecond = try container.decode(UInt64.self, forKey: .peakBytesPerSecond)
+        self.processes = try container.decode([ProcessTrafficSummary].self, forKey: .processes)
+        self.routeContexts = try container.decodeIfPresent([TrafficRouteContext].self, forKey: .routeContexts) ?? []
+        self.sampleCount = try container.decodeIfPresent(Int.self, forKey: .sampleCount)
     }
 }

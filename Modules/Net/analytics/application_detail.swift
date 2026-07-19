@@ -7,6 +7,7 @@ import Cocoa
 import Kit
 
 internal final class ApplicationDetailView: NSView {
+    private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let identityLabel = NSTextField(labelWithString: "")
     private let totalsLabel = NSTextField(labelWithString: "")
@@ -26,6 +27,7 @@ internal final class ApplicationDetailView: NSView {
     var onClose: (() -> Void)?
     private let enforcer: NetworkRuleEnforcing
     private let ruleStore: TrafficRuleStore
+    private let iconResolver: ApplicationIconResolving
     private var currentSummary: ApplicationTrafficSummary?
 
     private let quotaValuesGB = [0, 1, 5, 10, 50, 100]
@@ -33,10 +35,12 @@ internal final class ApplicationDetailView: NSView {
 
     init(
         enforcer: NetworkRuleEnforcing = NetworkExtensionRuleEnforcer(),
-        ruleStore: TrafficRuleStore = TrafficRuleStore()
+        ruleStore: TrafficRuleStore = TrafficRuleStore(),
+        iconResolver: ApplicationIconResolving = ApplicationIconResolver()
     ) {
         self.enforcer = enforcer
         self.ruleStore = ruleStore
+        self.iconResolver = iconResolver
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
         self.build()
@@ -50,6 +54,7 @@ internal final class ApplicationDetailView: NSView {
         self.currentSummary = summary
         self.isHidden = false
         self.titleLabel.stringValue = summary.identity.displayName
+        self.iconView.image = self.iconResolver.icon(for: summary.identity)
         self.identityLabel.stringValue = [
             summary.identity.bundleIdentifier,
             summary.identity.executablePath
@@ -109,8 +114,18 @@ internal final class ApplicationDetailView: NSView {
         self.enforcementLabel.alignment = .left
 
         stack.addArrangedSubview(self.closeButton)
-        stack.addArrangedSubview(self.titleLabel)
-        self.titleLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        self.iconView.imageScaling = .scaleProportionallyDown
+        self.iconView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            self.iconView.widthAnchor.constraint(equalToConstant: 32),
+            self.iconView.heightAnchor.constraint(equalToConstant: 32)
+        ])
+        let titleRow = NSStackView(views: [self.iconView, self.titleLabel])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 8
+        stack.addArrangedSubview(titleRow)
+        titleRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         stack.addArrangedSubview(self.identityLabel)
         self.identityLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         stack.addArrangedSubview(self.totalsLabel)

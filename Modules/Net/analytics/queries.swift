@@ -398,7 +398,7 @@ public final class TrafficAnalyticsEngine {
     }
 
     public func rank(records: [StoredTrafficRecord], search: String = "") -> [ApplicationTrafficSummary] {
-        var grouped: [String: (identity: ApplicationIdentity, download: UInt64, upload: UInt64, peak: UInt64, processes: [String: ProcessTrafficSummary])] = [:]
+        var grouped: [String: (identity: ApplicationIdentity, download: UInt64, upload: UInt64, peak: UInt64, sampleCount: Int?, routes: [TrafficRouteContext], processes: [String: ProcessTrafficSummary])] = [:]
 
         for record in records {
             let sample = record.sample
@@ -407,11 +407,19 @@ public final class TrafficAnalyticsEngine {
                 download: 0,
                 upload: 0,
                 peak: 0,
+                sampleCount: 0,
+                routes: [],
                 processes: [:]
             )
             bucket.download += sample.delta.download
             bucket.upload += sample.delta.upload
             bucket.peak = max(bucket.peak, sample.peakBytesPerSecond)
+            if let current = bucket.sampleCount, let count = record.sampleCount {
+                bucket.sampleCount = current + count
+            } else {
+                bucket.sampleCount = nil
+            }
+            if !bucket.routes.contains(sample.routeContext) { bucket.routes.append(sample.routeContext) }
 
             let processSummaries = record.processSummaries ?? [
                 StoredProcessTrafficSummary(
@@ -421,7 +429,8 @@ public final class TrafficAnalyticsEngine {
                     download: sample.delta.download,
                     upload: sample.delta.upload,
                     peakBytesPerSecond: sample.peakBytesPerSecond,
-                    sampleCount: record.sampleCount
+                    sampleCount: record.sampleCount,
+                    identity: sample.processIdentity
                 )
             ]
             for summary in processSummaries {
@@ -434,7 +443,9 @@ public final class TrafficAnalyticsEngine {
                     processName: summary.processName,
                     download: 0,
                     upload: 0,
-                    peakBytesPerSecond: 0
+                    peakBytesPerSecond: 0,
+                    sampleCount: 0,
+                    identity: summary.identity
                 )
                 bucket.processes[processKey] = ProcessTrafficSummary(
                     processDiscriminator: process.processDiscriminator,
@@ -442,7 +453,9 @@ public final class TrafficAnalyticsEngine {
                     processName: process.processName,
                     download: process.download + summary.download,
                     upload: process.upload + summary.upload,
-                    peakBytesPerSecond: max(process.peakBytesPerSecond, summary.peakBytesPerSecond)
+                    peakBytesPerSecond: max(process.peakBytesPerSecond, summary.peakBytesPerSecond),
+                    sampleCount: process.sampleCount.flatMap { current in summary.sampleCount.map { current + $0 } },
+                    identity: process.identity ?? summary.identity
                 )
             }
             grouped[sample.application.id] = bucket
@@ -459,7 +472,9 @@ public final class TrafficAnalyticsEngine {
                         return ($0.processDiscriminator ?? "") < ($1.processDiscriminator ?? "")
                     }
                     return $0.processID < $1.processID
-                }
+                },
+                routeContexts: $0.routes,
+                sampleCount: $0.sampleCount
             )
         }
         .filter { ApplicationIdentityResolver.matches($0, search: search) }

@@ -11,7 +11,8 @@ internal final class TrafficAnalysisView: NSView {
     private let repository: TrafficHistoryRepository
     private let networkRegistry: NetworkRegistry
     private let ruleStore: TrafficRuleStore
-    private var selection = TrafficSelection()
+    private let selectionStore: TrafficSelectionStore
+    private var selection: TrafficSelection
     private var snapshot: TrafficAnalyticsSnapshot?
     private var refreshTimer: Timer?
     private var fullRanking: [ApplicationTrafficSummary] = []
@@ -32,20 +33,30 @@ internal final class TrafficAnalysisView: NSView {
     private let hoverLabel = NSTextField(labelWithString: "")
     private let lineChart = TrafficTimelineChartView()
     private let heatmap = TrafficHeatmapView()
-    private let table = ApplicationTrafficTableController()
-    private let detail = ApplicationDetailView()
+    private let table: ApplicationTrafficTableController
+    private let detail: ApplicationDetailView
     private let contentStack = FlippedStackView()
 
     init(
         engine: TrafficAnalyticsEngine,
         repository: TrafficHistoryRepository,
         networkRegistry: NetworkRegistry = NetworkRegistry(),
-        ruleStore: TrafficRuleStore = TrafficRuleStore()
+        ruleStore: TrafficRuleStore = TrafficRuleStore(),
+        selectionStore: TrafficSelectionStore = TrafficSelectionStore(),
+        iconResolver: ApplicationIconResolving = ApplicationIconResolver()
     ) {
         self.engine = engine
         self.repository = repository
         self.networkRegistry = networkRegistry
         self.ruleStore = ruleStore
+        self.selectionStore = selectionStore
+        var restoredSelection = selectionStore.load()
+        if !selectionStore.hasSavedSelection {
+            restoredSelection.includeLocalNetwork = ruleStore.includeLocalNetwork
+        }
+        self.selection = restoredSelection
+        self.table = ApplicationTrafficTableController(iconResolver: iconResolver)
+        self.detail = ApplicationDetailView(ruleStore: ruleStore, iconResolver: iconResolver)
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
         self.build()
@@ -70,7 +81,7 @@ internal final class TrafficAnalysisView: NSView {
             range: query.range,
             networkFilter: query.networkFilter,
             networkID: query.networkID,
-            includeLocalNetwork: self.ruleStore.includeLocalNetwork,
+            includeLocalNetwork: self.selection.includeLocalNetwork,
             applicationSearch: query.applicationSearch,
             selectedInterval: query.selectedInterval,
             billingCycleDay: query.networkID.map { self.ruleStore.networkPlan(for: $0).billingCycleDay }
@@ -103,6 +114,7 @@ internal final class TrafficAnalysisView: NSView {
             self.rangeControl.setLabel(self.rangeTitle(range), forSegment: index)
         }
         self.rangeControl.selectedSegment = 0
+        self.rangeControl.identifier = NSUserInterfaceItemIdentifier("traffic-range")
         self.rangeControl.target = self
         self.rangeControl.action = #selector(self.controlsChanged)
 
@@ -123,6 +135,7 @@ internal final class TrafficAnalysisView: NSView {
 
         self.reloadNetworkMenu()
         self.networkControl.target = self
+        self.networkControl.identifier = NSUserInterfaceItemIdentifier("traffic-network")
         self.networkControl.action = #selector(self.controlsChanged)
 
         self.exportControl.removeAllItems()
@@ -130,13 +143,21 @@ internal final class TrafficAnalysisView: NSView {
         self.exportControl.addItem(withTitle: "CSV")
         self.exportControl.addItem(withTitle: "JSON")
         self.exportControl.target = self
+        self.exportControl.identifier = NSUserInterfaceItemIdentifier("traffic-export")
         self.exportControl.action = #selector(self.exportChanged)
 
         self.moreControl.addItem(withTitle: localizedString("More"))
         self.moreControl.addItem(withTitle: localizedString("Full timeline"))
+        self.moreControl.addItem(withTitle: localizedString("Show download"))
+        self.moreControl.addItem(withTitle: localizedString("Show upload"))
+        self.moreControl.addItem(withTitle: localizedString("Group by process"))
+        self.moreControl.addItem(withTitle: localizedString("Show proxy labels"))
+        self.moreControl.addItem(withTitle: localizedString("Show alert markers"))
+        self.moreControl.addItem(withTitle: localizedString("Include local network"))
         self.moreControl.identifier = NSUserInterfaceItemIdentifier("traffic-more-options")
         self.moreControl.target = self
         self.moreControl.action = #selector(self.moreChanged)
+        self.updateMoreMenuStates()
 
         self.dateButton.image = NSImage(systemSymbolName: "calendar.badge.clock", accessibilityDescription: localizedString("Custom time range"))
         self.dateButton.identifier = NSUserInterfaceItemIdentifier("traffic-custom-range")
@@ -150,8 +171,10 @@ internal final class TrafficAnalysisView: NSView {
         self.alertButton.target = self
         self.alertButton.action = #selector(self.showAlerts)
 
-        self.refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
+        self.refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: localizedString("Refresh"))
         self.refreshButton.bezelStyle = .texturedRounded
+        self.refreshButton.identifier = NSUserInterfaceItemIdentifier("traffic-refresh")
+        self.refreshButton.toolTip = localizedString("Refresh")
         self.refreshButton.target = self
         self.refreshButton.action = #selector(self.refreshClicked)
 
@@ -160,20 +183,26 @@ internal final class TrafficAnalysisView: NSView {
         rangeRow.alignment = .centerY
         rangeRow.spacing = 8
 
-        let optionsRow = NSStackView(views: [
-            self.chartModeControl,
+        let primaryOptionsRow = NSStackView(views: [
             self.networkControl,
-            self.refreshControl,
             self.exportControl,
-            self.moreControl,
             self.alertButton,
             self.refreshButton
         ])
-        optionsRow.orientation = .horizontal
-        optionsRow.alignment = .centerY
-        optionsRow.spacing = 8
+        primaryOptionsRow.orientation = .horizontal
+        primaryOptionsRow.alignment = .centerY
+        primaryOptionsRow.spacing = 8
 
-        let controls = FlippedStackView(views: [rangeRow, optionsRow])
+        let secondaryOptionsRow = NSStackView(views: [
+            self.chartModeControl,
+            self.refreshControl,
+            self.moreControl
+        ])
+        secondaryOptionsRow.orientation = .horizontal
+        secondaryOptionsRow.alignment = .centerY
+        secondaryOptionsRow.spacing = 8
+
+        let controls = FlippedStackView(views: [rangeRow, primaryOptionsRow, secondaryOptionsRow])
         controls.orientation = .vertical
         controls.alignment = .leading
         controls.spacing = 7
@@ -207,6 +236,7 @@ internal final class TrafficAnalysisView: NSView {
         self.lineChart.onSelection = { [weak self] interval in
             guard let self else { return }
             self.selection.selectedInterval = interval
+            self.persistSelection()
             self.reload()
         }
         self.lineChart.onHover = { [weak self] point in
@@ -223,6 +253,7 @@ internal final class TrafficAnalysisView: NSView {
             } else {
                 self.selection.selectedInterval = nil
             }
+            self.persistSelection()
             self.reload()
         }
         self.heatmap.onHover = { [weak self] cell in
@@ -238,6 +269,13 @@ internal final class TrafficAnalysisView: NSView {
             self.detail.show(summary)
             self.table.rootView().isHidden = true
         }
+        self.table.onStateChange = { [weak self] search, sortKey, ascending in
+            guard let self else { return }
+            self.selection.search = search
+            self.selection.sortKey = sortKey
+            self.selection.sortAscending = ascending
+            self.persistSelection()
+        }
         self.detail.onClose = { [weak self] in
             self?.table.rootView().isHidden = false
         }
@@ -246,6 +284,7 @@ internal final class TrafficAnalysisView: NSView {
         self.detail.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
         self.contentStack.addSubview(cards, positioned: .above, relativeTo: nil)
         self.contentStack.addSubview(controls, positioned: .above, relativeTo: nil)
+        self.synchronizeControls()
     }
 
     private func summaryCard(title: String, field: NSTextField) -> NSView {
@@ -300,6 +339,8 @@ internal final class TrafficAnalysisView: NSView {
         self.lineChart.isHidden = self.selection.chartMode != .line
         self.heatmap.isHidden = self.selection.chartMode != .heatmap
         self.scheduleRefresh()
+        self.persistSelection()
+        self.updateMoreMenuStates()
         self.reload()
     }
 
@@ -314,11 +355,14 @@ internal final class TrafficAnalysisView: NSView {
         panel.nameFieldStringValue = format == .csv ? "network-traffic.csv" : "network-traffic.json"
         panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
+            let networkFilter = self.selection.networkFilter
+            let context = self.exportContext()
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     try TrafficExporter.write(
                         snapshot: snapshot,
-                        networkFilter: self.selection.networkFilter,
+                        networkFilter: networkFilter,
+                        context: context,
                         format: format,
                         to: url
                     )
@@ -335,12 +379,26 @@ internal final class TrafficAnalysisView: NSView {
     }
 
     @objc private func moreChanged() {
-        guard self.moreControl.indexOfSelectedItem == 1 else { return }
+        let selected = self.moreControl.indexOfSelectedItem
         self.moreControl.selectItem(at: 0)
-        self.selection.selectedInterval = nil
-        if let index = TrafficRange.allCases.firstIndex(of: self.selection.range) {
-            self.rangeControl.selectedSegment = index
+        switch selected {
+        case 1:
+            self.selection.selectedInterval = nil
+            if let index = TrafficRange.allCases.firstIndex(of: self.selection.range) {
+                self.rangeControl.selectedSegment = index
+            }
+        case 2: self.selection.showDownload.toggle()
+        case 3: self.selection.showUpload.toggle()
+        case 4: self.selection.groupByProcess.toggle()
+        case 5: self.selection.showProxyLabels.toggle()
+        case 6: self.selection.showAlertMarkers.toggle()
+        case 7:
+            self.selection.includeLocalNetwork.toggle()
+            self.ruleStore.includeLocalNetwork = self.selection.includeLocalNetwork
+        default: return
         }
+        self.persistSelection()
+        self.updateMoreMenuStates()
         self.reload()
     }
 
@@ -359,6 +417,7 @@ internal final class TrafficAnalysisView: NSView {
                 self.selection.range = TrafficCustomRange.range(for: interval.duration)
                 self.rangeControl.selectedSegment = -1
                 self.datePopover.close()
+                self.persistSelection()
                 self.reload()
             }
         )
@@ -414,10 +473,61 @@ internal final class TrafficAnalysisView: NSView {
         self.fullRanking = snapshot.ranking
         self.lineChart.points = TrafficChartGeometry.points(from: snapshot.buckets)
         self.lineChart.alerts = snapshot.alerts
+        self.lineChart.showDownload = self.selection.showDownload
+        self.lineChart.showUpload = self.selection.showUpload
+        self.lineChart.showAlertMarkers = self.selection.showAlertMarkers
         self.heatmap.cells = TrafficChartGeometry.heatmapCells(from: snapshot.buckets)
-        self.table.update(snapshot.ranking)
+        self.table.update(
+            snapshot.ranking,
+            search: self.selection.search,
+            sortKey: self.selection.sortKey,
+            ascending: self.selection.sortAscending,
+            groupByProcess: self.selection.groupByProcess,
+            showProxyLabels: self.selection.showProxyLabels
+        )
         self.lineChart.isHidden = self.selection.chartMode != .line
         self.heatmap.isHidden = self.selection.chartMode != .heatmap
+    }
+
+    private func synchronizeControls() {
+        if let index = TrafficRange.allCases.firstIndex(of: self.selection.range) {
+            self.rangeControl.selectedSegment = self.selection.selectedInterval == nil ? index : -1
+        }
+        self.chartModeControl.selectedSegment = self.selection.chartMode == .heatmap ? 1 : 0
+        self.refreshControl.selectItem(at: TrafficRefreshMode.allCases.firstIndex(of: self.selection.refreshMode) ?? 2)
+        self.reloadNetworkMenu()
+        self.updateMoreMenuStates()
+    }
+
+    private func updateMoreMenuStates() {
+        let states = [
+            2: self.selection.showDownload,
+            3: self.selection.showUpload,
+            4: self.selection.groupByProcess,
+            5: self.selection.showProxyLabels,
+            6: self.selection.showAlertMarkers,
+            7: self.selection.includeLocalNetwork
+        ]
+        for (index, enabled) in states where self.moreControl.itemArray.indices.contains(index) {
+            self.moreControl.item(at: index)?.state = enabled ? .on : .off
+        }
+    }
+
+    private func persistSelection() {
+        self.selectionStore.save(self.selection)
+    }
+
+    private func exportContext() -> TrafficExportContext {
+        let registered = self.selection.networkID.flatMap { id in
+            self.networkRegistry.all().first { $0.identity.id == id }
+        }
+        return TrafficExportContext(
+            networkID: self.selection.networkID,
+            networkAlias: registered.map { self.networkRegistry.displayName(for: $0.identity.id) },
+            network: registered?.identity,
+            chartInterval: self.selection.selectedInterval,
+            groupByProcess: self.selection.groupByProcess
+        )
     }
 
     private func rangeTitle(_ range: TrafficRange) -> String {
@@ -456,10 +566,11 @@ internal final class LiveTrafficView: NSView {
     private let uploadLabel = NSTextField(labelWithString: "0 KB/s")
     private let totalLabel = NSTextField(labelWithString: "0 KB/s")
     private let chart = LiveTrafficChartView()
-    private let apps = LiveTrafficAppsView()
+    private let apps: LiveTrafficAppsView
 
-    init(engine: TrafficAnalyticsEngine) {
+    init(engine: TrafficAnalyticsEngine, iconResolver: ApplicationIconResolving = ApplicationIconResolver()) {
         self.engine = engine
+        self.apps = LiveTrafficAppsView(iconResolver: iconResolver)
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
         self.build()
@@ -777,11 +888,21 @@ internal final class LiveTrafficChartView: NSView {
 }
 
 internal final class LiveTrafficAppsView: NSView {
+    private let iconResolver: ApplicationIconResolving
     var items: [ApplicationTrafficSummary] = [] {
         didSet { self.needsDisplay = true }
     }
 
     override var isFlipped: Bool { true }
+
+    init(iconResolver: ApplicationIconResolving) {
+        self.iconResolver = iconResolver
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -798,8 +919,11 @@ internal final class LiveTrafficAppsView: NSView {
             let rect = CGRect(x: 0, y: CGFloat(index) * (rowHeight + 4), width: self.bounds.width, height: rowHeight)
             NSColor.controlBackgroundColor.setFill()
             NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
+            self.iconResolver.icon(for: item.identity).draw(
+                in: CGRect(x: rect.minX + 9, y: rect.minY + 8, width: 16, height: 16)
+            )
             (item.identity.displayName as NSString).draw(
-                at: CGPoint(x: 10, y: rect.minY + 8),
+                at: CGPoint(x: 31, y: rect.minY + 8),
                 withAttributes: [.foregroundColor: NSColor.labelColor, .font: NSFont.systemFont(ofSize: 11, weight: .medium)]
             )
             let value = "↓ \(self.rate(item.download))   ↑ \(self.rate(item.upload))" as NSString

@@ -17,16 +17,18 @@ internal final class TrafficOverviewView: NSView {
     private let quotaLabel = NSTextField(labelWithString: "—")
     private let forecastLabel = NSTextField(labelWithString: "—")
     private let trendView = TrafficOverviewTrendView()
-    private let appsView = TrafficOverviewAppsView()
+    private let appsView: TrafficOverviewAppsView
 
     init(
         engine: TrafficAnalyticsEngine,
         planStore: TrafficRuleStore,
-        networkRegistry: NetworkRegistry = NetworkRegistry()
+        networkRegistry: NetworkRegistry = NetworkRegistry(),
+        iconResolver: ApplicationIconResolving = ApplicationIconResolver()
     ) {
         self.engine = engine
         self.planStore = planStore
         self.networkRegistry = networkRegistry
+        self.appsView = TrafficOverviewAppsView(iconResolver: iconResolver)
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
         self.build()
@@ -248,10 +250,20 @@ private final class TrafficOverviewTrendView: NSView {
 }
 
 private final class TrafficOverviewAppsView: NSView {
+    private let iconResolver: ApplicationIconResolving
     private var items: [ApplicationTrafficSummary] = []
     private var total: UInt64 = 1
 
     override var isFlipped: Bool { true }
+
+    init(iconResolver: ApplicationIconResolving) {
+        self.iconResolver = iconResolver
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     func update(_ items: [ApplicationTrafficSummary], total: UInt64) {
         self.items = items
@@ -281,9 +293,11 @@ private final class TrafficOverviewAppsView: NSView {
             NSColor.controlBackgroundColor.setFill()
             path.fill()
 
+            let icon = self.iconResolver.icon(for: item.identity)
+            icon.draw(in: CGRect(x: rect.minX + 10, y: rect.minY + 9, width: 16, height: 16))
             let name = item.identity.displayName as NSString
             name.draw(
-                in: rect.insetBy(dx: 10, dy: 9),
+                in: CGRect(x: rect.minX + 32, y: rect.minY + 9, width: max(1, rect.width - 42), height: 18),
                 withAttributes: [.foregroundColor: NSColor.labelColor, .font: NSFont.systemFont(ofSize: 11, weight: .medium)]
             )
             let percent = Int(Double(item.total) / Double(self.total) * 100)
