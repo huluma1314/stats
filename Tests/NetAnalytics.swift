@@ -1091,6 +1091,23 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(rows.first?.iconIdentity, child)
     }
 
+    func testLiveProcessRowsKeepEachProcessesOwnMixedRoute() {
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let engine = TrafficAnalyticsEngine(repository: repository)
+        let now = Date(timeIntervalSince1970: 2_200_000_000)
+        let network = NetworkIdentity(id: "wifi", displayName: "Wi-Fi", interfaceName: "en0", kind: .wifi)
+        let owner = ApplicationIdentity(id: "mixed", displayName: "Mixed", bundleIdentifier: "mixed", executablePath: nil)
+        repository.insert(samples: [
+            TrafficSample(timestamp: now, application: owner, network: network, processID: 1, processName: "direct", processStartToken: 1, delta: TrafficDelta(download: 10, upload: 1), peakBytesPerSecond: 11, routeContext: TrafficRouteContext(kind: .direct)),
+            TrafficSample(timestamp: now, application: owner, network: network, processID: 2, processName: "tunnel", processStartToken: 1, delta: TrafficDelta(download: 20, upload: 2), peakBytesPerSecond: 22, routeContext: TrafficRouteContext(kind: .tunnel))
+        ])
+
+        let rows = LiveTrafficProcessRow.flatten(engine.liveSnapshot(window: .sixtySeconds, now: now).activeApplications)
+        let routes = Dictionary(uniqueKeysWithValues: rows.map { ($0.process.processName, $0.routeContexts.map(\.kind)) })
+        XCTAssertEqual(routes["direct"], [.direct])
+        XCTAssertEqual(routes["tunnel"], [.tunnel])
+    }
+
     func testLiveChartScaleHoldsAcrossLowerConsecutiveRefreshes() {
         let chart = LiveTrafficChartView()
         chart.points = [LiveTrafficPoint(timestamp: Date(), download: 1_000, upload: 500)]
@@ -1732,7 +1749,8 @@ final class NetAnalyticsTests: XCTestCase {
                 download: 15,
                 upload: 5,
                 peakBytesPerSecond: 11,
-                sampleCount: 2
+                sampleCount: 2,
+                routeContexts: [TrafficRouteContext(kind: .direct)]
             ),
             StoredProcessTrafficSummary(
                 processDiscriminator: firstHelperB.processDiscriminator,
@@ -1741,7 +1759,8 @@ final class NetAnalyticsTests: XCTestCase {
                 download: 20,
                 upload: 2,
                 peakBytesPerSecond: 22,
-                sampleCount: 1
+                sampleCount: 1,
+                routeContexts: [TrafficRouteContext(kind: .direct)]
             ),
             StoredProcessTrafficSummary(
                 processDiscriminator: secondHelperC.processDiscriminator,
@@ -1750,7 +1769,8 @@ final class NetAnalyticsTests: XCTestCase {
                 download: 7,
                 upload: 3,
                 peakBytesPerSecond: 10,
-                sampleCount: 1
+                sampleCount: 1,
+                routeContexts: [TrafficRouteContext(kind: .direct)]
             )
         ])
         XCTAssertTrue(secondSourceKeys.allSatisfy { store.get(key: $0) == nil })
@@ -1844,7 +1864,8 @@ final class NetAnalyticsTests: XCTestCase {
                 download: 15,
                 upload: 5,
                 peakBytesPerSecond: 11,
-                sampleCount: 2
+                sampleCount: 2,
+                routeContexts: [TrafficRouteContext(kind: .direct)]
             ),
             ProcessTrafficSummary(
                 processDiscriminator: helperB.processDiscriminator,
@@ -1853,7 +1874,8 @@ final class NetAnalyticsTests: XCTestCase {
                 download: 20,
                 upload: 2,
                 peakBytesPerSecond: 22,
-                sampleCount: 1
+                sampleCount: 1,
+                routeContexts: [TrafficRouteContext(kind: .direct)]
             )
         ])
 
@@ -1895,7 +1917,8 @@ final class NetAnalyticsTests: XCTestCase {
                 processName: "Legacy Representative",
                 download: 30,
                 upload: 12,
-                peakBytesPerSecond: 42
+                peakBytesPerSecond: 42,
+                routeContexts: [TrafficRouteContext(kind: .direct)]
             )
         ])
     }

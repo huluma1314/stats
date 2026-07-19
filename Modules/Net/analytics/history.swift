@@ -29,6 +29,7 @@ public struct StoredProcessTrafficSummary: Codable, Equatable {
     public let peakBytesPerSecond: UInt64
     public let sampleCount: Int?
     public let identity: ApplicationIdentity?
+    public let routeContexts: [TrafficRouteContext]
 
     public init(
         processDiscriminator: String,
@@ -38,7 +39,8 @@ public struct StoredProcessTrafficSummary: Codable, Equatable {
         upload: UInt64,
         peakBytesPerSecond: UInt64,
         sampleCount: Int?,
-        identity: ApplicationIdentity? = nil
+        identity: ApplicationIdentity? = nil,
+        routeContexts: [TrafficRouteContext] = []
     ) {
         self.processDiscriminator = processDiscriminator
         self.processID = processID
@@ -48,6 +50,24 @@ public struct StoredProcessTrafficSummary: Codable, Equatable {
         self.peakBytesPerSecond = peakBytesPerSecond
         self.sampleCount = sampleCount
         self.identity = identity
+        self.routeContexts = routeContexts
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case processDiscriminator, processID, processName, download, upload, peakBytesPerSecond, sampleCount, identity, routeContexts
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.processDiscriminator = try container.decode(String.self, forKey: .processDiscriminator)
+        self.processID = try container.decode(Int32.self, forKey: .processID)
+        self.processName = try container.decode(String.self, forKey: .processName)
+        self.download = try container.decode(UInt64.self, forKey: .download)
+        self.upload = try container.decode(UInt64.self, forKey: .upload)
+        self.peakBytesPerSecond = try container.decode(UInt64.self, forKey: .peakBytesPerSecond)
+        self.sampleCount = try container.decodeIfPresent(Int.self, forKey: .sampleCount)
+        self.identity = try container.decodeIfPresent(ApplicationIdentity.self, forKey: .identity)
+        self.routeContexts = try container.decodeIfPresent([TrafficRouteContext].self, forKey: .routeContexts) ?? []
     }
 }
 

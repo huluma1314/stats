@@ -412,7 +412,8 @@ public enum TrafficAggregation {
                     upload: record.sample.delta.upload,
                     peakBytesPerSecond: record.sample.peakBytesPerSecond,
                     sampleCount: record.sampleCount,
-                    identity: record.sample.processIdentity
+                    identity: record.sample.processIdentity,
+                    routeContexts: [record.sample.routeContext]
                 )
             ]
 
@@ -444,7 +445,8 @@ public enum TrafficAggregation {
                             upload: existing.upload + process.upload,
                             peakBytesPerSecond: max(existing.peakBytesPerSecond, process.peakBytesPerSecond),
                             sampleCount: self.mergedCount(existing.sampleCount, process.sampleCount),
-                            identity: existing.identity ?? process.identity
+                            identity: existing.identity ?? process.identity,
+                            routeContexts: self.mergedRoutes(existing.routeContexts, process.routeContexts)
                         )
                     } else {
                         group.processes[process.processDiscriminator] = process
@@ -503,7 +505,8 @@ public enum TrafficAggregation {
                     upload: current.upload + process.upload,
                     peakBytesPerSecond: max(current.peakBytesPerSecond, process.peakBytesPerSecond),
                     sampleCount: self.mergedCount(current.sampleCount, process.sampleCount),
-                    identity: current.identity ?? process.identity
+                    identity: current.identity ?? process.identity,
+                    routeContexts: self.mergedRoutes(current.routeContexts, process.routeContexts)
                 )
             } else {
                 processes[process.processDiscriminator] = process
@@ -535,7 +538,8 @@ public enum TrafficAggregation {
                 upload: record.sample.delta.upload,
                 peakBytesPerSecond: record.sample.peakBytesPerSecond,
                 sampleCount: record.sampleCount,
-                identity: record.sample.processIdentity
+                identity: record.sample.processIdentity,
+                routeContexts: [record.sample.routeContext]
             )
         ]
     }
@@ -543,5 +547,9 @@ public enum TrafficAggregation {
     private static func mergedCount(_ lhs: Int?, _ rhs: Int?) -> Int? {
         guard let lhs, let rhs else { return nil }
         return lhs + rhs
+    }
+
+    private static func mergedRoutes(_ lhs: [TrafficRouteContext], _ rhs: [TrafficRouteContext]) -> [TrafficRouteContext] {
+        lhs + rhs.filter { !lhs.contains($0) }
     }
 }

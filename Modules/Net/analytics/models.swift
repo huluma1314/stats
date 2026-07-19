@@ -283,6 +283,7 @@ public struct ProcessTrafficSummary: Codable, Equatable {
     public let peakBytesPerSecond: UInt64
     public let sampleCount: Int?
     public let identity: ApplicationIdentity?
+    public let routeContexts: [TrafficRouteContext]
 
     public init(
         processDiscriminator: String? = nil,
@@ -292,7 +293,8 @@ public struct ProcessTrafficSummary: Codable, Equatable {
         upload: UInt64,
         peakBytesPerSecond: UInt64,
         sampleCount: Int? = nil,
-        identity: ApplicationIdentity? = nil
+        identity: ApplicationIdentity? = nil,
+        routeContexts: [TrafficRouteContext] = []
     ) {
         self.processDiscriminator = processDiscriminator
         self.processID = processID
@@ -302,10 +304,11 @@ public struct ProcessTrafficSummary: Codable, Equatable {
         self.peakBytesPerSecond = peakBytesPerSecond
         self.sampleCount = sampleCount
         self.identity = identity
+        self.routeContexts = routeContexts
     }
 
     private enum CodingKeys: String, CodingKey {
-        case processDiscriminator, processID, processName, download, upload, peakBytesPerSecond, sampleCount, identity
+        case processDiscriminator, processID, processName, download, upload, peakBytesPerSecond, sampleCount, identity, routeContexts
     }
 
     public init(from decoder: Decoder) throws {
@@ -318,6 +321,7 @@ public struct ProcessTrafficSummary: Codable, Equatable {
         self.peakBytesPerSecond = try container.decode(UInt64.self, forKey: .peakBytesPerSecond)
         self.sampleCount = try container.decodeIfPresent(Int.self, forKey: .sampleCount)
         self.identity = try container.decodeIfPresent(ApplicationIdentity.self, forKey: .identity)
+        self.routeContexts = try container.decodeIfPresent([TrafficRouteContext].self, forKey: .routeContexts) ?? []
     }
 }
 

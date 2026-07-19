@@ -1059,7 +1059,7 @@ internal struct LiveTrafficProcessRow: Equatable {
     static func flatten(_ applications: [ApplicationTrafficSummary]) -> [LiveTrafficProcessRow] {
         applications.flatMap { application in
             application.processes.map {
-                LiveTrafficProcessRow(owner: application.identity, process: $0, routeContexts: application.routeContexts)
+                LiveTrafficProcessRow(owner: application.identity, process: $0, routeContexts: $0.routeContexts)
             }
         }.sorted {
             if $0.total == $1.total { return $0.process.processName.localizedCaseInsensitiveCompare($1.process.processName) == .orderedAscending }
