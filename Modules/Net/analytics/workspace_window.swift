@@ -22,9 +22,9 @@ internal final class NetworkAnalyticsWindowController: NSWindowController {
     private weak var workspaceView: NetworkAnalyticsWorkspaceView?
 
     private(set) var selectedPage: NetworkAnalyticsWorkspacePage
-    var frameAutosaveNameForTesting: String { Self.frameAutosaveName }
-    var repositoryIdentityForTesting: ObjectIdentifier { ObjectIdentifier(self.repository) }
-    var engineIdentityForTesting: ObjectIdentifier { ObjectIdentifier(self.analyticsEngine) }
+    var repositoryIdentity: ObjectIdentifier { ObjectIdentifier(self.repository) }
+    var engineIdentity: ObjectIdentifier { ObjectIdentifier(self.analyticsEngine) }
+    var networkRegistryIdentity: ObjectIdentifier { ObjectIdentifier(self.networkRegistry) }
 
     init(
         repository: TrafficHistoryRepository,
@@ -34,6 +34,7 @@ internal final class NetworkAnalyticsWindowController: NSWindowController {
         analyticsEngine: TrafficAnalyticsEngine? = nil,
         openSettings: @escaping () -> Void
     ) {
+        dispatchPrecondition(condition: .onQueue(.main))
         self.repository = repository
         self.ruleStore = ruleStore
         self.networkRegistry = networkRegistry
@@ -51,6 +52,7 @@ internal final class NetworkAnalyticsWindowController: NSWindowController {
 
     @discardableResult
     func show() -> NSWindow {
+        dispatchPrecondition(condition: .onQueue(.main))
         let window = self.workspaceWindow ?? self.makeWindow()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -58,12 +60,14 @@ internal final class NetworkAnalyticsWindowController: NSWindowController {
     }
 
     func select(_ page: NetworkAnalyticsWorkspacePage) {
+        dispatchPrecondition(condition: .onQueue(.main))
         self.selectedPage = page
         self.defaults.set(page.rawValue, forKey: Self.selectedPageKey)
         self.workspaceView?.select(page)
     }
 
     private func makeWindow() -> NSWindow {
+        dispatchPrecondition(condition: .onQueue(.main))
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultContentSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],

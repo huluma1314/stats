@@ -27,10 +27,10 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
     private let pageHost = NSView()
     private let pages: [NetworkAnalyticsWorkspacePage: NSView]
     private var hostedPage: NSView?
-    private(set) var visiblePageForTesting: NetworkAnalyticsWorkspacePage?
+    private(set) var visiblePage: NetworkAnalyticsWorkspacePage?
     private let onSelect: (NetworkAnalyticsWorkspacePage) -> Void
-    var repositoryIdentityForTesting: ObjectIdentifier { ObjectIdentifier(self.repository) }
-    var engineIdentityForTesting: ObjectIdentifier { ObjectIdentifier(self.engine) }
+    var repositoryIdentity: ObjectIdentifier { ObjectIdentifier(self.repository) }
+    var engineIdentity: ObjectIdentifier { ObjectIdentifier(self.engine) }
 
     init(
         engine: TrafficAnalyticsEngine,
@@ -41,6 +41,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
         openSettings: @escaping () -> Void,
         onSelect: @escaping (NetworkAnalyticsWorkspacePage) -> Void
     ) {
+        dispatchPrecondition(condition: .onQueue(.main))
         self.engine = engine
         self.repository = repository
         self.onSelect = onSelect
@@ -75,6 +76,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
     }
 
     func select(_ page: NetworkAnalyticsWorkspacePage) {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard let view = self.pages[page] else { return }
         if let index = NetworkAnalyticsWorkspacePage.allCases.firstIndex(of: page) {
             self.pageControl.selectedSegment = index
@@ -82,7 +84,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
         guard self.hostedPage !== view else { return }
         self.hostedPage?.removeFromSuperview()
         self.hostedPage = view
-        self.visiblePageForTesting = page
+        self.visiblePage = page
         view.translatesAutoresizingMaskIntoConstraints = false
         self.pageHost.addSubview(view)
         NSLayoutConstraint.activate([
@@ -96,6 +98,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
     }
 
     private func build(openSettings: @escaping () -> Void) {
+        dispatchPrecondition(condition: .onQueue(.main))
         let header = NSStackView()
         header.orientation = .horizontal
         header.alignment = .centerY
@@ -126,6 +129,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
     }
 
     @objc private func pageChanged(_ sender: NSSegmentedControl) {
+        dispatchPrecondition(condition: .onQueue(.main))
         let pages = NetworkAnalyticsWorkspacePage.allCases
         guard sender.selectedSegment >= 0, sender.selectedSegment < pages.count else { return }
         self.onSelect(pages[sender.selectedSegment])

@@ -49,6 +49,7 @@ public final class NetworkRegistry {
     public static let storageKey = "net.analytics.networkRegistry.v1"
 
     private let defaults: UserDefaults
+    private let lock = NSLock()
     private var entries: [String: RegisteredNetwork]
 
     public init(defaults: UserDefaults = .standard) {
@@ -60,53 +61,61 @@ public final class NetworkRegistry {
     public func observe(_ identity: NetworkIdentity, at date: Date = Date()) -> RegisteredNetwork {
         let canonical = Self.canonicalIdentity(for: identity)
         let id = canonical.id
-        if var existing = self.entries[id] {
-            existing.lastSeen = max(existing.lastSeen, date)
-            if let bssid = identity.bssid, !bssid.isEmpty, !existing.observedBSSIDs.contains(bssid) {
-                existing.observedBSSIDs.append(bssid)
+        return self.withLock {
+            if var existing = self.entries[id] {
+                existing.lastSeen = max(existing.lastSeen, date)
+                if let bssid = identity.bssid, !bssid.isEmpty, !existing.observedBSSIDs.contains(bssid) {
+                    existing.observedBSSIDs.append(bssid)
+                }
+                if !existing.observedInterfaceNames.contains(identity.interfaceName) {
+                    existing.observedInterfaceNames.append(identity.interfaceName)
+                }
+                self.entries[id] = existing
+                self.persistLocked()
+                return existing
             }
-            if !existing.observedInterfaceNames.contains(identity.interfaceName) {
-                existing.observedInterfaceNames.append(identity.interfaceName)
-            }
-            self.entries[id] = existing
-            self.persist()
-            return existing
-        }
 
-        let entry = RegisteredNetwork(
-            identity: canonical,
-            firstSeen: date,
-            lastSeen: date,
-            observedBSSIDs: identity.bssid.map { [$0] } ?? [],
-            observedInterfaceNames: [identity.interfaceName]
-        )
-        self.entries[id] = entry
-        self.persist()
-        return entry
+            let entry = RegisteredNetwork(
+                identity: canonical,
+                firstSeen: date,
+                lastSeen: date,
+                observedBSSIDs: identity.bssid.map { [$0] } ?? [],
+                observedInterfaceNames: [identity.interfaceName]
+            )
+            self.entries[id] = entry
+            self.persistLocked()
+            return entry
+        }
     }
 
     public func all() -> [RegisteredNetwork] {
-        self.entries.values.sorted {
-            if $0.firstSeen == $1.firstSeen { return $0.identity.id < $1.identity.id }
-            return $0.firstSeen < $1.firstSeen
+        self.withLock {
+            self.entries.values.sorted {
+                if $0.firstSeen == $1.firstSeen { return $0.identity.id < $1.identity.id }
+                return $0.firstSeen < $1.firstSeen
+            }
         }
     }
 
     public func setAlias(_ alias: String?, for networkID: String) {
-        guard var entry = self.entries[networkID] else { return }
-        let normalized = alias?.trimmingCharacters(in: .whitespacesAndNewlines)
-        entry.alias = normalized?.isEmpty == true ? nil : normalized
-        self.entries[networkID] = entry
-        self.persist()
+        self.withLock {
+            guard var entry = self.entries[networkID] else { return }
+            let normalized = alias?.trimmingCharacters(in: .whitespacesAndNewlines)
+            entry.alias = normalized?.isEmpty == true ? nil : normalized
+            self.entries[networkID] = entry
+            self.persistLocked()
+        }
     }
 
     public func displayName(for networkID: String) -> String {
-        guard let entry = self.entries[networkID] else { return networkID }
-        return entry.alias ?? entry.identity.displayName
+        self.withLock {
+            guard let entry = self.entries[networkID] else { return networkID }
+            return entry.alias ?? entry.identity.displayName
+        }
     }
 
     public func identity(for networkID: String) -> NetworkIdentity? {
-        self.entries[networkID]?.identity
+        self.withLock { self.entries[networkID]?.identity }
     }
 
     public static func canonicalIdentity(for identity: NetworkIdentity) -> NetworkIdentity {
@@ -147,9 +156,15 @@ public final class NetworkRegistry {
         return decoded
     }
 
-    private func persist() {
+    private func persistLocked() {
         guard let data = try? JSONEncoder().encode(self.entries) else { return }
         self.defaults.set(data, forKey: Self.storageKey)
+    }
+
+    private func withLock<T>(_ operation: () -> T) -> T {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return operation()
     }
 
     private static func stripPrefix(_ value: String, prefix: String) -> String {

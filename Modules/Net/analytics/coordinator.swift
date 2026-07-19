@@ -144,6 +144,7 @@ public final class TrafficAnalyticsCoordinator {
     private let runtimeRuleService: TrafficRuntimeRuleService
     private let runtimeAlertService: TrafficRuntimeAlertService
     private let systemProxyProvider: SystemProxyConfigurationProviding
+    var networkRegistryIdentity: ObjectIdentifier { ObjectIdentifier(self.networkRegistry) }
 
     private var previousCounters: [String: ProcessTrafficCounter] = [:]
     private var currentNetwork = NetworkIdentity(

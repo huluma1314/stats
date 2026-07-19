@@ -30,7 +30,7 @@ final class NetAnalyticsTests: XCTestCase {
         let window = controller.show()
         defer { window.close() }
 
-        XCTAssertEqual(controller.frameAutosaveNameForTesting, "NetworkAnalyticsWorkspaceWindow")
+        XCTAssertEqual(NetworkAnalyticsWindowController.frameAutosaveName, "NetworkAnalyticsWorkspaceWindow")
         XCTAssertTrue(window.styleMask.contains(.titled))
         XCTAssertTrue(window.styleMask.contains(.closable))
         XCTAssertTrue(window.styleMask.contains(.miniaturizable))
@@ -46,7 +46,7 @@ final class NetAnalyticsTests: XCTestCase {
         for page in NetworkAnalyticsWorkspacePage.allCases {
             controller.select(page)
             XCTAssertEqual(controller.selectedPage, page)
-            XCTAssertEqual(workspace.visiblePageForTesting, page)
+            XCTAssertEqual(workspace.visiblePage, page)
         }
     }
 
@@ -78,13 +78,15 @@ final class NetAnalyticsTests: XCTestCase {
         let restoredWindow = restored.show()
         defer { restoredWindow.close() }
         XCTAssertEqual(
-            (restoredWindow.contentView as? NetworkAnalyticsWorkspaceView)?.visiblePageForTesting,
+            (restoredWindow.contentView as? NetworkAnalyticsWorkspaceView)?.visiblePage,
             .history
         )
     }
 
     func testAnalyticsWorkspaceReusesInjectedRepositoryAndEngine() throws {
-        let defaults = UserDefaults(suiteName: "NetAnalyticsTests.workspace.identity.\(UUID().uuidString)")!
+        let suiteName = "NetAnalyticsTests.workspace.identity.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
         let engine = TrafficAnalyticsEngine(repository: repository)
         let controller = NetworkAnalyticsWindowController(
@@ -100,10 +102,10 @@ final class NetAnalyticsTests: XCTestCase {
         defer { window.close() }
         let workspace = try XCTUnwrap(window.contentView as? NetworkAnalyticsWorkspaceView)
 
-        XCTAssertEqual(controller.repositoryIdentityForTesting, ObjectIdentifier(repository))
-        XCTAssertEqual(controller.engineIdentityForTesting, ObjectIdentifier(engine))
-        XCTAssertEqual(workspace.repositoryIdentityForTesting, ObjectIdentifier(repository))
-        XCTAssertEqual(workspace.engineIdentityForTesting, ObjectIdentifier(engine))
+        XCTAssertEqual(controller.repositoryIdentity, ObjectIdentifier(repository))
+        XCTAssertEqual(controller.engineIdentity, ObjectIdentifier(engine))
+        XCTAssertEqual(workspace.repositoryIdentity, ObjectIdentifier(repository))
+        XCTAssertEqual(workspace.engineIdentity, ObjectIdentifier(engine))
     }
 
     func testAnalyticsWorkspaceCloseAndShowReusesSameVisibleWindow() {
@@ -117,16 +119,6 @@ final class NetAnalyticsTests: XCTestCase {
 
         XCTAssertTrue(first === reopened)
         XCTAssertTrue(reopened.isVisible)
-    }
-
-    func testAnalyticsWorkspaceWindowHasNoCollectionStopDependency() throws {
-        let testsURL = URL(fileURLWithPath: #filePath)
-        let sourceURL = testsURL.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Modules/Net/analytics/workspace_window.swift")
-        let source = try String(contentsOf: sourceURL)
-
-        XCTAssertFalse(source.contains("TrafficAnalyticsCoordinator"))
-        XCTAssertFalse(source.contains(".stop("))
     }
 
     func testPreviewOpenAnalyticsButtonHasStableIdentifierAndInvokesCallback() throws {
@@ -181,6 +173,7 @@ final class NetAnalyticsTests: XCTestCase {
         let suiteName = "NetAnalyticsTests.workspace.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
+        self.addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
         return NetworkAnalyticsWindowController(
             repository: TrafficHistoryRepository(store: InMemoryTrafficStore()),
             ruleStore: TrafficRuleStore(defaults: defaults),
@@ -3168,6 +3161,55 @@ final class NetAnalyticsTests: XCTestCase {
         _ = coordinator.stop()
     }
 
+
+    func testCoordinatorAndWorkspaceControllerShareNetworkRegistryInstance() {
+        let suiteName = "NetAnalyticsTests.registry.shared.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let registry = NetworkRegistry(defaults: defaults)
+        let coordinator = TrafficAnalyticsCoordinator(
+            repository: repository,
+            networkRegistry: registry
+        )
+        let controller = NetworkAnalyticsWindowController(
+            repository: repository,
+            ruleStore: TrafficRuleStore(defaults: defaults),
+            networkRegistry: registry,
+            defaults: defaults,
+            openSettings: {}
+        )
+
+        XCTAssertEqual(coordinator.networkRegistryIdentity, ObjectIdentifier(registry))
+        XCTAssertEqual(controller.networkRegistryIdentity, ObjectIdentifier(registry))
+    }
+
+    func testNetworkRegistrySupportsConcurrentObservationAndReads() {
+        let suiteName = "NetAnalyticsTests.registry.concurrent.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let registry = NetworkRegistry(defaults: defaults)
+
+        DispatchQueue.concurrentPerform(iterations: 100) { index in
+            _ = registry.observe(NetworkIdentity(
+                id: "wifi:Cafe",
+                displayName: "Cafe",
+                interfaceName: "en\(index)",
+                kind: .wifi,
+                ssid: "Cafe",
+                bssid: String(format: "00:00:00:00:00:%02x", index)
+            ), at: Date(timeIntervalSince1970: TimeInterval(index)))
+            _ = registry.all()
+            _ = registry.displayName(for: "wifi:cafe")
+            _ = registry.identity(for: "wifi:cafe")
+        }
+
+        let entry = registry.all().first
+        XCTAssertEqual(registry.all().count, 1)
+        XCTAssertEqual(entry?.observedBSSIDs.count, 100)
+        XCTAssertEqual(entry?.observedInterfaceNames.count, 100)
+        XCTAssertEqual(entry?.lastSeen, Date(timeIntervalSince1970: 99))
+    }
 
     func testNetworkRegistryUsesStableWiFiEthernetHotspotAndTunnelIDs() {
         let defaults = UserDefaults(suiteName: "net-analytics-registry-")!

@@ -181,6 +181,7 @@ public class Network: Module {
         let analyticsNotifier = RuntimeTrafficAlertNotifier()
         self.analyticsCoordinator = TrafficAnalyticsCoordinator(
             repository: analyticsRepository,
+            networkRegistry: analyticsNetworkRegistry,
             runtimeAlertService: TrafficRuntimeAlertService(
                 repository: analyticsRepository,
                 notifier: analyticsNotifier
