@@ -598,3 +598,6 @@
 "Per-network plan" = "按网络套餐";
 "All-networks default" = "全部网络默认套餐";
 "Billing-cycle day must be between 1 and 31." = "结算日必须在 1 到 31 之间。";
+"Apply rule" = "应用规则";
+"Notify rule is active" = "通知规则已启用";
+"Rule saved; press Apply rule to activate" = "规则已保存；点击“应用规则”后才会生效";

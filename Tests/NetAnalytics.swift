@@ -3107,6 +3107,113 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(store.networkPlan(for: "wifi:work").byteLimit, 200)
     }
 
+
+    func testRuntimeRulesEvaluateNetworkAndApplicationUsageAfterIngest() {
+        let suite = "net-runtime-rules-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let ruleStore = TrafficRuleStore(defaults: defaults)
+        let alertStore = TrafficAlertStore(defaults: defaults)
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore(), alertStore: alertStore, ruleStore: ruleStore)
+        let app = self.identity
+        ruleStore.save(applicationRules: [ApplicationTrafficRule(
+            id: "rule-1", applicationID: app.id, period: .monthly, byteLimit: 100, action: .notify
+        )])
+        let service = TrafficRuntimeRuleService(repository: repository, ruleStore: ruleStore, alertStore: alertStore)
+        let sample = self.sample(at: Date(timeIntervalSince1970: 1_000), network: NetworkIdentity(id: "wifi:home", displayName: "Home", interfaceName: "en0", kind: .wifi), applicationID: app.id, download: 100, upload: 0)
+
+        let results = service.evaluate(batch: CommittedTrafficBatch(samples: [sample]))
+        XCTAssertEqual(results.first?.triggeredThresholds, [100])
+        XCTAssertEqual(results.first?.requestedAction, .notify)
+        XCTAssertEqual(results.first?.activationState, .active)
+    }
+
+    func testRuntimeRulesResetThresholdsAtEachBillingBoundary() {
+        let suite = "net-runtime-boundary-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let ruleStore = TrafficRuleStore(defaults: defaults)
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore(), ruleStore: ruleStore)
+        ruleStore.save(applicationRules: [ApplicationTrafficRule(id: "rule", applicationID: self.identity.id, period: .monthly, byteLimit: 100, action: .notify)])
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 1_700_000_000))
+        let service = TrafficRuntimeRuleService(repository: repository, ruleStore: ruleStore, clock: clock, calendar: calendar)
+        let network = NetworkIdentity(id: "wifi:home", displayName: "Home", interfaceName: "en0", kind: .wifi)
+        let first = self.sample(at: Date(timeIntervalSince1970: 1_700_000_000), network: network, applicationID: self.identity.id, download: 100, upload: 0)
+        let second = self.sample(at: Date(timeIntervalSince1970: 1_700_000_100), network: network, applicationID: self.identity.id, download: 100, upload: 0)
+        XCTAssertEqual(service.evaluate(batch: CommittedTrafficBatch(samples: [first])).first?.triggeredThresholds, [100])
+        XCTAssertEqual(service.evaluate(batch: CommittedTrafficBatch(samples: [second])).first?.triggeredThresholds, [])
+        clock.advance(by: 32 * 86_400)
+        let nextCycle = self.sample(at: clock.now(), network: network, applicationID: self.identity.id, download: 100, upload: 0)
+        XCTAssertEqual(service.evaluate(batch: CommittedTrafficBatch(samples: [nextCycle])).first?.triggeredThresholds, [100])
+    }
+
+    func testNotifyRuleIsActiveWithoutNetworkExtensionEntitlement() {
+        let service = TrafficRuntimeRuleService(repository: TrafficHistoryRepository(store: InMemoryTrafficStore()))
+        let rule = ApplicationTrafficRule(applicationID: self.identity.id, action: .notify)
+        XCTAssertEqual(service.activationState(for: rule), .active)
+    }
+
+    func testUnavailableRateLimitRuleSavesAsInactiveWithoutCallingEnforcer() {
+        let suite = "net-runtime-rate-limit-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let store = TrafficRuleStore(defaults: defaults)
+        let enforcer = RecordingNetworkRuleEnforcer(capability: .unavailable(.missingEntitlement))
+        let service = TrafficRuntimeRuleService(repository: TrafficHistoryRepository(store: InMemoryTrafficStore(), ruleStore: store), ruleStore: store, enforcer: enforcer)
+        let rule = ApplicationTrafficRule(applicationID: self.identity.id, downloadLimitBytesPerSecond: 10, action: .rateLimit)
+        store.save(applicationRules: [rule])
+
+        XCTAssertEqual(service.activate(rule), .savedInactive(.missingEntitlement))
+        XCTAssertTrue(enforcer.applied.isEmpty)
+        XCTAssertEqual(store.applicationRules().first, rule)
+    }
+
+    func testUnavailableBlockRuleHasNoActivationOrApplyControl() {
+        let service = TrafficRuntimeRuleService(repository: TrafficHistoryRepository(store: InMemoryTrafficStore()), enforcer: UnavailableNetworkRuleEnforcer())
+        let rule = ApplicationTrafficRule(applicationID: self.identity.id, action: .block)
+        XCTAssertEqual(service.activationState(for: rule), .savedInactive(.missingEntitlement))
+        XCTAssertEqual(service.activate(rule), .savedInactive(.missingEntitlement))
+    }
+
+    func testShippingBuildCannotReportAvailableForPlaceholderNetworkExtensionEnforcer() {
+        XCTAssertEqual(NetworkExtensionRuleEnforcer().capability, .unavailable(.missingEntitlement))
+    }
+
+    func testFailedCapableEnforcerNeverProducesAnAppliedState() {
+        let service = TrafficRuntimeRuleService(repository: TrafficHistoryRepository(store: InMemoryTrafficStore()), enforcer: RecordingNetworkRuleEnforcer(capability: .available, shouldFail: true))
+        let rule = ApplicationTrafficRule(applicationID: self.identity.id, downloadLimitBytesPerSecond: 10, action: .rateLimit)
+        XCTAssertEqual(service.activate(rule), .failed("failed"))
+    }
+
+    func testFailedOrPartialIngestTriggersNoQuotaEventAlertOrEnforcer() {
+        let suite = "net-runtime-failed-ingest-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let ruleStore = TrafficRuleStore(defaults: defaults)
+        let alertStore = TrafficAlertStore(defaults: defaults)
+        let enforcer = RecordingNetworkRuleEnforcer(capability: .available)
+        let service = TrafficRuntimeRuleService(repository: TrafficHistoryRepository(store: InMemoryTrafficStore(), alertStore: alertStore, ruleStore: ruleStore), ruleStore: ruleStore, alertStore: alertStore, enforcer: enforcer)
+        XCTAssertTrue(service.evaluate(result: .failure(.storeFailed("failed"))).isEmpty)
+        XCTAssertTrue(enforcer.applied.isEmpty)
+        XCTAssertTrue(alertStore.all().isEmpty)
+    }
+
+    func testPauseAndTemporaryAllowanceSuppressActionsUntilTheyExpire() {
+        let suite = "net-runtime-pause-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let store = TrafficRuleStore(defaults: defaults)
+        let clock = MutableTrafficClock(now: Date(timeIntervalSince1970: 1_000))
+        let service = TrafficRuntimeRuleService(repository: TrafficHistoryRepository(store: InMemoryTrafficStore()), ruleStore: store, clock: clock)
+        let paused = ApplicationTrafficRule(applicationID: self.identity.id, byteLimit: 1, action: .notify, isPaused: true)
+        let allowed = ApplicationTrafficRule(applicationID: self.identity.id, byteLimit: 1, action: .notify, allowUntil: Date(timeIntervalSince1970: 2_000))
+        XCTAssertEqual(service.evaluate(rule: paused, usageBytes: 10).activationState, .paused)
+        XCTAssertEqual(service.evaluate(rule: allowed, usageBytes: 10).activationState, .temporarilyAllowed(until: Date(timeIntervalSince1970: 2_000)))
+    }
+
+    func testUploadAndDownloadRuntimeLimitsRemainIndependent() {
+        let service = TrafficRuntimeRuleService(repository: TrafficHistoryRepository(store: InMemoryTrafficStore()), enforcer: RecordingNetworkRuleEnforcer(capability: .available))
+        let rule = ApplicationTrafficRule(applicationID: self.identity.id, downloadLimitBytesPerSecond: 10, uploadLimitBytesPerSecond: 20, action: .rateLimit)
+        XCTAssertEqual(service.enforcementAction(for: rule)?.kind, .rateLimit(downloadBytesPerSecond: 10, uploadBytesPerSecond: 20))
+    }
+
     private func waitUntil(timeout: TimeInterval = 1, condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -3246,6 +3353,23 @@ private struct FakeProcessMetadataProvider: ProcessMetadataProviding {
             return entry
         }
         return ProcessMetadata(processID: processID, processName: fallbackName)
+    }
+}
+
+
+private final class RecordingNetworkRuleEnforcer: NetworkRuleEnforcing {
+    let capability: NetworkEnforcementCapability
+    let shouldFail: Bool
+    private(set) var applied: [NetworkEnforcementAction] = []
+
+    init(capability: NetworkEnforcementCapability, shouldFail: Bool = false) {
+        self.capability = capability
+        self.shouldFail = shouldFail
+    }
+
+    func apply(_ action: NetworkEnforcementAction) throws {
+        if shouldFail { throw NetworkEnforcementError.invalidRequest }
+        applied.append(action)
     }
 }
 

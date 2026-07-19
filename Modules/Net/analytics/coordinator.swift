@@ -102,6 +102,7 @@ public final class TrafficAnalyticsCoordinator {
     private let maintenanceInterval: TimeInterval
     private let calendar: Calendar
     private let networkRegistry: NetworkRegistry
+    private let runtimeRuleService: TrafficRuntimeRuleService
 
     private var previousCounters: [String: ProcessTrafficCounter] = [:]
     private var currentNetwork = NetworkIdentity(
@@ -129,7 +130,8 @@ public final class TrafficAnalyticsCoordinator {
         maintenanceScheduler: TrafficMaintenanceScheduling = DispatchTrafficMaintenanceScheduler(),
         maintenanceInterval: TimeInterval = 6 * 60 * 60,
         calendar: Calendar = .current,
-        networkRegistry: NetworkRegistry = NetworkRegistry()
+        networkRegistry: NetworkRegistry = NetworkRegistry(),
+        runtimeRuleService: TrafficRuntimeRuleService? = nil
     ) {
         self.repository = repository
         self.resolver = resolver
@@ -141,6 +143,11 @@ public final class TrafficAnalyticsCoordinator {
         self.maintenanceInterval = maintenanceInterval
         self.calendar = calendar
         self.networkRegistry = networkRegistry
+        self.runtimeRuleService = runtimeRuleService ?? TrafficRuntimeRuleService(
+            repository: repository,
+            clock: clock,
+            calendar: calendar
+        )
     }
 
     public func start() {
@@ -359,6 +366,7 @@ public final class TrafficAnalyticsCoordinator {
     private func persistLocked(_ samples: [TrafficSample]) -> Bool {
         switch self.repository.ingest(samples) {
         case .success(let batch):
+            _ = self.runtimeRuleService.evaluate(batch: batch)
             self.samplesWritten += batch.samples.count
             self.pendingSamples.removeAll()
             self.consecutivePersistenceFailures = 0

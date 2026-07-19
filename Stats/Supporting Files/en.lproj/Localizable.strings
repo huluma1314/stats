@@ -598,3 +598,6 @@
 "Per-network plan" = "Per-network plan";
 "All-networks default" = "All-networks default";
 "Billing-cycle day must be between 1 and 31." = "Billing-cycle day must be between 1 and 31.";
+"Apply rule" = "Apply rule";
+"Notify rule is active" = "Notify rule is active";
+"Rule saved; press Apply rule to activate" = "Rule saved; press Apply rule to activate";

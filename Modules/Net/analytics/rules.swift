@@ -37,6 +37,7 @@ public struct NetworkPlan: Codable, Equatable {
 }
 
 public struct ApplicationTrafficRule: Codable, Equatable {
+    public var id: String
     public var applicationID: String
     public var period: QuotaPeriod
     public var byteLimit: UInt64?
@@ -47,6 +48,7 @@ public struct ApplicationTrafficRule: Codable, Equatable {
     public var allowUntil: Date?
 
     public init(
+        id: String = UUID().uuidString,
         applicationID: String,
         period: QuotaPeriod = .monthly,
         byteLimit: UInt64? = nil,
@@ -56,6 +58,7 @@ public struct ApplicationTrafficRule: Codable, Equatable {
         isPaused: Bool = false,
         allowUntil: Date? = nil
     ) {
+        self.id = id
         self.applicationID = applicationID
         self.period = period
         self.byteLimit = byteLimit
@@ -64,6 +67,23 @@ public struct ApplicationTrafficRule: Codable, Equatable {
         self.action = action
         self.isPaused = isPaused
         self.allowUntil = allowUntil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, applicationID, period, byteLimit, downloadLimitBytesPerSecond, uploadLimitBytesPerSecond, action, isPaused, allowUntil
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.applicationID = try container.decode(String.self, forKey: .applicationID)
+        self.id = try container.decodeIfPresent(String.self, forKey: .id) ?? "legacy:\(self.applicationID)"
+        self.period = try container.decodeIfPresent(QuotaPeriod.self, forKey: .period) ?? .monthly
+        self.byteLimit = try container.decodeIfPresent(UInt64.self, forKey: .byteLimit)
+        self.downloadLimitBytesPerSecond = try container.decodeIfPresent(UInt64.self, forKey: .downloadLimitBytesPerSecond)
+        self.uploadLimitBytesPerSecond = try container.decodeIfPresent(UInt64.self, forKey: .uploadLimitBytesPerSecond)
+        self.action = try container.decodeIfPresent(QuotaAction.self, forKey: .action) ?? .notify
+        self.isPaused = try container.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false
+        self.allowUntil = try container.decodeIfPresent(Date.self, forKey: .allowUntil)
     }
 }
 

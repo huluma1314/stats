@@ -20,6 +20,7 @@ internal final class ApplicationDetailView: NSView {
     private let actionControl = NSPopUpButton()
     private let pausedControl = NSButton(checkboxWithTitle: localizedString("Pause rule"), target: nil, action: nil)
     private let saveRuleButton = NSButton(title: localizedString("Save rule"), target: nil, action: nil)
+    private let applyRuleButton = NSButton(title: localizedString("Apply rule"), target: nil, action: nil)
     private let clearRuleButton = NSButton(title: localizedString("Clear rule"), target: nil, action: nil)
 
     var onClose: (() -> Void)?
@@ -31,7 +32,7 @@ internal final class ApplicationDetailView: NSView {
     private let rateValues: [UInt64?] = [nil, 128_000, 512_000, 1_000_000, 5_000_000, 10_000_000]
 
     init(
-        enforcer: NetworkRuleEnforcing = UnavailableNetworkRuleEnforcer(),
+        enforcer: NetworkRuleEnforcing = NetworkExtensionRuleEnforcer(),
         ruleStore: TrafficRuleStore = TrafficRuleStore()
     ) {
         self.enforcer = enforcer
@@ -62,6 +63,7 @@ internal final class ApplicationDetailView: NSView {
         self.processesLabel.stringValue = summary.processes.map {
             "\($0.processName) (\($0.processID))  ↓\(Units(bytes: Int64($0.download)).getReadableMemory())  ↑\(Units(bytes: Int64($0.upload)).getReadableMemory())"
         }.joined(separator: "\n")
+        self.applyRuleButton.isEnabled = self.enforcer.capability == .available
         let capability = self.enforcer.capability
         switch capability {
         case .available:
@@ -137,7 +139,7 @@ internal final class ApplicationDetailView: NSView {
         }
         editor.addArrangedSubview(self.pausedControl)
 
-        let actions = NSStackView(views: [self.saveRuleButton, self.clearRuleButton])
+        let actions = NSStackView(views: [self.saveRuleButton, self.applyRuleButton, self.clearRuleButton])
         actions.orientation = .horizontal
         actions.spacing = 8
         editor.addArrangedSubview(actions)
@@ -170,9 +172,12 @@ internal final class ApplicationDetailView: NSView {
         QuotaAction.allCases.forEach { self.actionControl.addItem(withTitle: self.actionTitle($0)) }
         self.pausedControl.identifier = NSUserInterfaceItemIdentifier("traffic-rule-paused")
         self.saveRuleButton.identifier = NSUserInterfaceItemIdentifier("traffic-rule-save")
+        self.applyRuleButton.identifier = NSUserInterfaceItemIdentifier("traffic-rule-apply")
         self.clearRuleButton.identifier = NSUserInterfaceItemIdentifier("traffic-rule-clear")
         self.saveRuleButton.target = self
         self.saveRuleButton.action = #selector(self.saveRule)
+        self.applyRuleButton.target = self
+        self.applyRuleButton.action = #selector(self.applyRule)
         self.clearRuleButton.target = self
         self.clearRuleButton.action = #selector(self.clearRule)
     }
@@ -225,7 +230,8 @@ internal final class ApplicationDetailView: NSView {
         var rules = self.ruleStore.applicationRules().filter { $0.applicationID != summary.identity.id }
         rules.append(rule)
         self.ruleStore.save(applicationRules: rules)
-        self.applyEnforcement(rule)
+        self.applyRuleButton.isEnabled = self.enforcer.capability == .available && rule.action != .notify
+        self.showSavedState(rule)
     }
 
     @objc private func clearRule() {
@@ -238,32 +244,46 @@ internal final class ApplicationDetailView: NSView {
         self.enforcementLabel.stringValue = localizedString("Rule cleared")
     }
 
-    private func applyEnforcement(_ rule: ApplicationTrafficRule) {
-        guard case .available = self.enforcer.capability else {
-            if case .unavailable(let reason) = self.enforcer.capability {
-                self.enforcementLabel.stringValue = "\(localizedString("Rule saved but inactive")): \(reason.message)"
-            }
+    @objc private func applyRule() {
+        guard let applicationID = self.currentSummary?.identity.id,
+              let rule = self.ruleStore.applicationRules().first(where: { $0.applicationID == applicationID }) else { return }
+        guard rule.action != .notify else {
+            self.enforcementLabel.stringValue = localizedString("Notify rule is active")
             return
         }
-        let kind: NetworkEnforcementAction.Kind
-        if rule.isPaused {
-            kind = .pause
-        } else {
-            switch rule.action {
-            case .notify: kind = .clear
-            case .rateLimit:
-                kind = .rateLimit(
-                    downloadBytesPerSecond: rule.downloadLimitBytesPerSecond,
-                    uploadBytesPerSecond: rule.uploadLimitBytesPerSecond
-                )
-            case .block: kind = .block(.both)
-            }
+        guard case .available = self.enforcer.capability else {
+            self.showSavedState(rule)
+            return
         }
+        guard let kind: NetworkEnforcementAction.Kind = self.enforcementKind(for: rule) else { return }
         do {
             try self.enforcer.apply(NetworkEnforcementAction(applicationID: rule.applicationID, kind: kind))
             self.enforcementLabel.stringValue = localizedString("Rule saved and applied")
         } catch {
             self.enforcementLabel.stringValue = "\(localizedString("Rule saved but inactive")): \(error.localizedDescription)"
+        }
+    }
+
+    private func showSavedState(_ rule: ApplicationTrafficRule) {
+        if rule.action == .notify {
+            self.enforcementLabel.stringValue = localizedString("Notify rule is active")
+        } else if case .unavailable(let reason) = self.enforcer.capability {
+            self.enforcementLabel.stringValue = "\(localizedString("Rule saved but inactive")): \(reason.message)"
+        } else {
+            self.enforcementLabel.stringValue = localizedString("Rule saved; press Apply rule to activate")
+        }
+    }
+
+    private func enforcementKind(for rule: ApplicationTrafficRule) -> NetworkEnforcementAction.Kind? {
+        if rule.isPaused { return .pause }
+        switch rule.action {
+        case .notify: return .clear
+        case .rateLimit:
+            return .rateLimit(
+                downloadBytesPerSecond: rule.downloadLimitBytesPerSecond,
+                uploadBytesPerSecond: rule.uploadLimitBytesPerSecond
+            )
+        case .block: return .block(.both)
         }
     }
 

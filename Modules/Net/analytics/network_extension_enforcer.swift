@@ -9,14 +9,13 @@ import Foundation
 import NetworkExtension
 
 public final class NetworkExtensionRuleEnforcer: NetworkRuleEnforcing {
-    public let capability: NetworkEnforcementCapability = .available
+    public let capability: NetworkEnforcementCapability = .unavailable(.missingEntitlement)
 
     public init() {}
 
     public func apply(_ action: NetworkEnforcementAction) throws {
-        // Placeholder for a future entitlement-backed filter data provider.
-        // The standard app target never compiles this path.
         _ = action
+        throw NetworkEnforcementError.unavailable(.missingEntitlement)
     }
 }
 #else
