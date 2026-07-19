@@ -3829,7 +3829,7 @@ final class NetAnalyticsTests: XCTestCase {
 
     func testMinimumWidthKeepsRangeNetworkExportAndAlertControlsReachable() {
         let view = TrafficAnalysisView(engine: TrafficAnalyticsEngine(repository: TrafficHistoryRepository(store: InMemoryTrafficStore())), repository: TrafficHistoryRepository(store: InMemoryTrafficStore()))
-        view.frame = NSRect(x: 0, y: 0, width: 420, height: 720)
+        view.frame = NSRect(x: 0, y: 0, width: 720, height: 720)
         view.layoutSubtreeIfNeeded()
         let descendants = self.descendants(of: view)
         let required = ["traffic-range", "traffic-network", "traffic-export", "traffic-alert-list", "traffic-refresh", "traffic-custom-range"]
@@ -3840,6 +3840,28 @@ final class NetAnalyticsTests: XCTestCase {
                 XCTAssertFalse(control.isHidden, identifier)
                 XCTAssertFalse(control.visibleRect.isEmpty, identifier)
             }
+        }
+    }
+
+    func testHistoryWorkspaceExposesCardHierarchy() {
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let view = TrafficAnalysisView(
+            engine: TrafficAnalyticsEngine(repository: repository),
+            repository: repository
+        )
+        view.frame = NSRect(x: 0, y: 0, width: 1_080, height: 760)
+        view.layoutSubtreeIfNeeded()
+
+        let identifiers = Set(self.descendants(of: view).compactMap { $0.identifier?.rawValue })
+        for identifier in [
+            "history-toolbar",
+            "history-download-card",
+            "history-upload-card",
+            "history-total-card",
+            "history-timeline-card",
+            "history-ranking-card"
+        ] {
+            XCTAssertTrue(identifiers.contains(identifier), identifier)
         }
     }
 

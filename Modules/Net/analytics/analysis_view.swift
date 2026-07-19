@@ -36,6 +36,7 @@ internal final class TrafficAnalysisView: NSView {
     private let table: ApplicationTrafficTableController
     private let detail: ApplicationDetailView
     private let contentStack = FlippedStackView()
+    private let secondaryOptionsRow = NSStackView()
 
     init(
         engine: TrafficAnalyticsEngine,
@@ -193,26 +194,27 @@ internal final class TrafficAnalysisView: NSView {
         primaryOptionsRow.alignment = .centerY
         primaryOptionsRow.spacing = 8
 
-        let secondaryOptionsRow = NSStackView(views: [
+        self.secondaryOptionsRow.setViews([
             self.chartModeControl,
             self.refreshControl,
             self.moreControl
-        ])
-        secondaryOptionsRow.orientation = .horizontal
-        secondaryOptionsRow.alignment = .centerY
-        secondaryOptionsRow.spacing = 8
+        ], in: .leading)
+        self.secondaryOptionsRow.orientation = .horizontal
+        self.secondaryOptionsRow.alignment = .centerY
+        self.secondaryOptionsRow.spacing = 8
 
-        let controls = FlippedStackView(views: [rangeRow, primaryOptionsRow, secondaryOptionsRow])
+        let controls = FlippedStackView(views: [rangeRow, primaryOptionsRow, self.secondaryOptionsRow])
         controls.orientation = .vertical
         controls.alignment = .leading
         controls.spacing = 7
+        controls.identifier = NSUserInterfaceItemIdentifier("history-toolbar")
         self.contentStack.addArrangedSubview(controls)
         controls.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
 
         let cards = NSStackView(views: [
-            self.summaryCard(title: localizedString("Download"), field: self.downloadLabel),
-            self.summaryCard(title: localizedString("Upload"), field: self.uploadLabel),
-            self.summaryCard(title: localizedString("Total"), field: self.totalLabel)
+            self.summaryCard(title: localizedString("Download"), field: self.downloadLabel, identifier: "history-download-card"),
+            self.summaryCard(title: localizedString("Upload"), field: self.uploadLabel, identifier: "history-upload-card"),
+            self.summaryCard(title: localizedString("Total"), field: self.totalLabel, identifier: "history-total-card")
         ])
         cards.orientation = .horizontal
         cards.distribution = .fillEqually
@@ -223,15 +225,24 @@ internal final class TrafficAnalysisView: NSView {
 
         self.hoverLabel.textColor = .secondaryLabelColor
         self.hoverLabel.font = .systemFont(ofSize: 11)
-        self.contentStack.addArrangedSubview(self.hoverLabel)
 
         self.lineChart.translatesAutoresizingMaskIntoConstraints = false
         self.lineChart.heightAnchor.constraint(equalToConstant: 180).isActive = true
         self.heatmap.translatesAutoresizingMaskIntoConstraints = false
         self.heatmap.heightAnchor.constraint(equalToConstant: 180).isActive = true
         self.heatmap.isHidden = true
-        self.contentStack.addArrangedSubview(self.lineChart)
-        self.contentStack.addArrangedSubview(self.heatmap)
+        let timelineTitle = NSTextField(labelWithString: localizedString("Traffic timeline"))
+        timelineTitle.font = .systemFont(ofSize: 14, weight: .semibold)
+        let timelineHelp = NSTextField(labelWithString: localizedString("Drag to select an interval. Alert markers show detected anomalies."))
+        timelineHelp.font = .systemFont(ofSize: 11)
+        timelineHelp.textColor = .secondaryLabelColor
+        let timelineStack = FlippedStackView(views: [timelineTitle, timelineHelp, self.hoverLabel, self.lineChart, self.heatmap])
+        timelineStack.orientation = .vertical
+        timelineStack.alignment = .width
+        timelineStack.spacing = 6
+        let timelineCard = self.card(containing: timelineStack, identifier: "history-timeline-card")
+        self.contentStack.addArrangedSubview(timelineCard)
+        timelineCard.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
 
         self.lineChart.onSelection = { [weak self] interval in
             guard let self else { return }
@@ -279,15 +290,33 @@ internal final class TrafficAnalysisView: NSView {
         self.detail.onClose = { [weak self] in
             self?.table.rootView().isHidden = false
         }
-        self.contentStack.addArrangedSubview(self.table.rootView())
-        self.contentStack.addArrangedSubview(self.detail)
-        self.detail.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
+        let rankingTitle = NSTextField(labelWithString: localizedString("Application ranking"))
+        rankingTitle.font = .systemFont(ofSize: 14, weight: .semibold)
+        let rankingHelp = NSTextField(labelWithString: localizedString("Select an interval in the timeline to filter this ranking."))
+        rankingHelp.font = .systemFont(ofSize: 11)
+        rankingHelp.textColor = .secondaryLabelColor
+        let rankingStack = FlippedStackView(views: [rankingTitle, rankingHelp, self.table.rootView(), self.detail])
+        rankingStack.orientation = .vertical
+        rankingStack.alignment = .width
+        rankingStack.spacing = 6
+        let rankingCard = self.card(containing: rankingStack, identifier: "history-ranking-card")
+        self.contentStack.addArrangedSubview(rankingCard)
+        rankingCard.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
+        self.detail.widthAnchor.constraint(equalTo: rankingStack.widthAnchor).isActive = true
         self.contentStack.addSubview(cards, positioned: .above, relativeTo: nil)
         self.contentStack.addSubview(controls, positioned: .above, relativeTo: nil)
         self.synchronizeControls()
     }
 
-    private func summaryCard(title: String, field: NSTextField) -> NSView {
+    override func layout() {
+        super.layout()
+        let compact = self.bounds.width < 900
+        self.chartModeControl.isHidden = compact
+        self.refreshControl.isHidden = compact
+        self.moreControl.isHidden = false
+    }
+
+    private func summaryCard(title: String, field: NSTextField, identifier: String) -> NSView {
         let titleField = NSTextField(labelWithString: title)
         titleField.font = .systemFont(ofSize: 11, weight: .medium)
         titleField.textColor = .secondaryLabelColor
@@ -299,7 +328,27 @@ internal final class TrafficAnalysisView: NSView {
         box.wantsLayer = true
         box.layer?.cornerRadius = 8
         box.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        box.identifier = NSUserInterfaceItemIdentifier(identifier)
+        box.heightAnchor.constraint(equalToConstant: 72).isActive = true
         return box
+    }
+
+    private func card(containing content: NSView, identifier: String) -> NSView {
+        let card = NSView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.identifier = NSUserInterfaceItemIdentifier(identifier)
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 10
+        card.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        content.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12)
+        ])
+        return card
     }
 
     private func reloadNetworkMenu() {
@@ -349,14 +398,16 @@ internal final class TrafficAnalysisView: NSView {
         let format: TrafficExportFormat = self.exportControl.indexOfSelectedItem == 1 ? .csv : .json
         self.exportControl.selectItem(at: 0)
         guard let snapshot else { return }
+        // Capture every export input while still on the main thread. The save panel may
+        // stay open while the user changes the visible selection in another window.
+        let networkFilter = self.selection.networkFilter
+        let context = self.exportContext()
 
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = format == .csv ? "network-traffic.csv" : "network-traffic.json"
         panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            let networkFilter = self.selection.networkFilter
-            let context = self.exportContext()
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     try TrafficExporter.write(
