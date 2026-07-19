@@ -25,6 +25,31 @@ final class NetAnalyticsTests: XCTestCase {
         first.close()
     }
 
+    func testAnalyticsWorkspaceWindowUsesStableAutosaveNameAndStandardStyle() {
+        let controller = self.makeWorkspaceController()
+        let window = controller.show()
+        defer { window.close() }
+
+        XCTAssertEqual(controller.frameAutosaveNameForTesting, "NetworkAnalyticsWorkspaceWindow")
+        XCTAssertTrue(window.styleMask.contains(.titled))
+        XCTAssertTrue(window.styleMask.contains(.closable))
+        XCTAssertTrue(window.styleMask.contains(.miniaturizable))
+        XCTAssertTrue(window.styleMask.contains(.resizable))
+    }
+
+    func testAnalyticsWorkspaceSelectUpdatesControllerAndVisiblePage() throws {
+        let controller = self.makeWorkspaceController()
+        let window = controller.show()
+        defer { window.close() }
+        let workspace = try XCTUnwrap(window.contentView as? NetworkAnalyticsWorkspaceView)
+
+        for page in NetworkAnalyticsWorkspacePage.allCases {
+            controller.select(page)
+            XCTAssertEqual(controller.selectedPage, page)
+            XCTAssertEqual(workspace.visiblePageForTesting, page)
+        }
+    }
+
     func testAnalyticsWorkspacePersistsSelectedPage() {
         let suiteName = "NetAnalyticsTests.workspace.page.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -50,6 +75,76 @@ final class NetAnalyticsTests: XCTestCase {
             openSettings: {}
         )
         XCTAssertEqual(restored.selectedPage, .history)
+        let restoredWindow = restored.show()
+        defer { restoredWindow.close() }
+        XCTAssertEqual(
+            (restoredWindow.contentView as? NetworkAnalyticsWorkspaceView)?.visiblePageForTesting,
+            .history
+        )
+    }
+
+    func testAnalyticsWorkspaceReusesInjectedRepositoryAndEngine() throws {
+        let defaults = UserDefaults(suiteName: "NetAnalyticsTests.workspace.identity.\(UUID().uuidString)")!
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let engine = TrafficAnalyticsEngine(repository: repository)
+        let controller = NetworkAnalyticsWindowController(
+            repository: repository,
+            ruleStore: TrafficRuleStore(defaults: defaults),
+            networkRegistry: NetworkRegistry(defaults: defaults),
+            defaults: defaults,
+            analyticsEngine: engine,
+            openSettings: {}
+        )
+
+        let window = controller.show()
+        defer { window.close() }
+        let workspace = try XCTUnwrap(window.contentView as? NetworkAnalyticsWorkspaceView)
+
+        XCTAssertEqual(controller.repositoryIdentityForTesting, ObjectIdentifier(repository))
+        XCTAssertEqual(controller.engineIdentityForTesting, ObjectIdentifier(engine))
+        XCTAssertEqual(workspace.repositoryIdentityForTesting, ObjectIdentifier(repository))
+        XCTAssertEqual(workspace.engineIdentityForTesting, ObjectIdentifier(engine))
+    }
+
+    func testAnalyticsWorkspaceCloseAndShowReusesSameVisibleWindow() {
+        let controller = self.makeWorkspaceController()
+        let first = controller.show()
+        XCTAssertTrue(first.isVisible)
+
+        first.close()
+        let reopened = controller.show()
+        defer { reopened.close() }
+
+        XCTAssertTrue(first === reopened)
+        XCTAssertTrue(reopened.isVisible)
+    }
+
+    func testAnalyticsWorkspaceWindowHasNoCollectionStopDependency() throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+        let sourceURL = testsURL.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Modules/Net/analytics/workspace_window.swift")
+        let source = try String(contentsOf: sourceURL)
+
+        XCTAssertFalse(source.contains("TrafficAnalyticsCoordinator"))
+        XCTAssertFalse(source.contains(".stop("))
+    }
+
+    func testPreviewOpenAnalyticsButtonHasStableIdentifierAndInvokesCallback() throws {
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let preview = Preview(
+            .network,
+            analyticsRepository: repository,
+            analyticsEngine: TrafficAnalyticsEngine(repository: repository)
+        )
+        var invocationCount = 0
+        preview.openAnalyticsCallback = { invocationCount += 1 }
+        let button = try XCTUnwrap(self.descendants(of: preview).compactMap { $0 as? NSButton }.first {
+            $0.identifier?.rawValue == "NetworkPreviewOpenAnalyticsButton"
+        })
+
+        button.performClick(nil)
+
+        XCTAssertEqual(invocationCount, 1)
     }
 
     func testAnalyticsWorkspaceUsesDefaultWindowSize() {

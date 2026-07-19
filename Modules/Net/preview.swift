@@ -225,6 +225,7 @@ internal class Preview: PreviewWrapper {
             action: #selector(self.openAnalytics)
         )
         openAnalytics.bezelStyle = .rounded
+        openAnalytics.identifier = NSUserInterfaceItemIdentifier("NetworkPreviewOpenAnalyticsButton")
         container.addArrangedSubview(openAnalytics)
         return container
     }

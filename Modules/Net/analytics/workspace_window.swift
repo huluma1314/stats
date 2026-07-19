@@ -22,6 +22,9 @@ internal final class NetworkAnalyticsWindowController: NSWindowController {
     private weak var workspaceView: NetworkAnalyticsWorkspaceView?
 
     private(set) var selectedPage: NetworkAnalyticsWorkspacePage
+    var frameAutosaveNameForTesting: String { Self.frameAutosaveName }
+    var repositoryIdentityForTesting: ObjectIdentifier { ObjectIdentifier(self.repository) }
+    var engineIdentityForTesting: ObjectIdentifier { ObjectIdentifier(self.analyticsEngine) }
 
     init(
         repository: TrafficHistoryRepository,
@@ -70,7 +73,6 @@ internal final class NetworkAnalyticsWindowController: NSWindowController {
         window.title = localizedString("Network Analytics")
         window.contentMinSize = Self.minimumContentSize
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName(Self.frameAutosaveName)
         window.center()
 
         let view = NetworkAnalyticsWorkspaceView(
@@ -86,6 +88,7 @@ internal final class NetworkAnalyticsWindowController: NSWindowController {
         self.workspaceView = view
         self.workspaceWindow = window
         self.window = window
+        window.setFrameAutosaveName(Self.frameAutosaveName)
         return window
     }
 }

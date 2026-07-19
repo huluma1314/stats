@@ -21,11 +21,16 @@ internal enum NetworkAnalyticsWorkspacePage: String, CaseIterable {
 }
 
 internal final class NetworkAnalyticsWorkspaceView: NSView {
+    private let engine: TrafficAnalyticsEngine
+    private let repository: TrafficHistoryRepository
     private let pageControl: NSSegmentedControl
     private let pageHost = NSView()
     private let pages: [NetworkAnalyticsWorkspacePage: NSView]
     private var hostedPage: NSView?
+    private(set) var visiblePageForTesting: NetworkAnalyticsWorkspacePage?
     private let onSelect: (NetworkAnalyticsWorkspacePage) -> Void
+    var repositoryIdentityForTesting: ObjectIdentifier { ObjectIdentifier(self.repository) }
+    var engineIdentityForTesting: ObjectIdentifier { ObjectIdentifier(self.engine) }
 
     init(
         engine: TrafficAnalyticsEngine,
@@ -36,6 +41,8 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
         openSettings: @escaping () -> Void,
         onSelect: @escaping (NetworkAnalyticsWorkspacePage) -> Void
     ) {
+        self.engine = engine
+        self.repository = repository
         self.onSelect = onSelect
         self.pageControl = NSSegmentedControl(
             labels: NetworkAnalyticsWorkspacePage.allCases.map(\.title),
@@ -75,6 +82,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
         guard self.hostedPage !== view else { return }
         self.hostedPage?.removeFromSuperview()
         self.hostedPage = view
+        self.visiblePageForTesting = page
         view.translatesAutoresizingMaskIntoConstraints = false
         self.pageHost.addSubview(view)
         NSLayoutConstraint.activate([
