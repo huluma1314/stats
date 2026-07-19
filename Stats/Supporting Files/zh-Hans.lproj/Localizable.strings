@@ -637,3 +637,14 @@
 "Show traffic alerts" = "显示流量警报";
 "Refresh current analytics page" = "刷新当前分析页";
 "Open network settings" = "打开网络设置";
+"Application focus" = "应用筛选";
+"Application ranking" = "应用排行";
+"Drag to select an interval. Alert markers show detected anomalies." = "拖拽选择时间范围，告警标记表示检测到的异常。";
+"Live" = "实时";
+"Network Analytics" = "网络分析";
+"Overview" = "概览";
+"Proxy" = "代理";
+"Select an interval in the timeline to filter this ranking." = "在时间轴中选择区间以筛选此排行。";
+"Sorted by current total rate" = "按当前总速率排序";
+"Traffic timeline" = "流量时间轴";
+"Upload" = "上传";

@@ -264,6 +264,7 @@ internal final class TrafficOverviewView: NSView {
     private func label(_ key: String, size: CGFloat, weight: NSFont.Weight) -> NSTextField {
         let field = NSTextField(labelWithString: localizedString(key))
         field.font = .systemFont(ofSize: size, weight: weight)
+        field.alignment = .left
         return field
     }
 
@@ -311,11 +312,17 @@ private final class OverviewCardView: NSView {
         super.init(frame: .zero)
         self.wantsLayer = true
         self.layer?.cornerRadius = radius
+        self.layer?.borderWidth = 0.5
         self.updateColor()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); self.updateColor() }
-    private func updateColor() { self.layer?.backgroundColor = self.fillColor.cgColor }
+    private func updateColor() {
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            self.layer?.backgroundColor = self.fillColor.cgColor
+            self.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        }
+    }
 }
 
 private final class TrafficOverviewTrendView: NSView {

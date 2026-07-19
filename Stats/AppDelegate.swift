@@ -80,6 +80,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             modules.reversed().forEach{ $0.mount() }
             self.modulesMounted = true
             self.showSettingsIfNoActiveWidgets()
+#if DEBUG
+            self.openNetworkAnalyticsAcceptanceWorkspaceIfRequested()
+#endif
         }
         self.defaultValues()
         self.icon()
@@ -101,6 +104,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         info("Stats started in \((startingPoint.timeIntervalSinceNow * -1).rounded(toPlaces: 4)) seconds")
         self.startTS = Date()
     }
+
+#if DEBUG
+    private func openNetworkAnalyticsAcceptanceWorkspaceIfRequested() {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--network-analytics-acceptance") else { return }
+        if arguments.contains("--network-analytics-dark") {
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+        let page = arguments.indices.contains(index + 1) ? arguments[index + 1] : nil
+        (modules.first { $0 is Network } as? Network)?.showAnalyticsWorkspaceForAcceptance(page: page)
+    }
+#endif
     
     func applicationWillTerminate(_ aNotification: Notification) {
         modules.forEach{ $0.terminate() }

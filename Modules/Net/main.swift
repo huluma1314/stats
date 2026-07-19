@@ -295,6 +295,22 @@ public class Network: Module {
         self.setIPUpdater()
         self.setUsageReset()
     }
+
+#if DEBUG
+    /// Opens the real analytics workspace for visual acceptance automation.
+    public func showAnalyticsWorkspaceForAcceptance(page: String?) {
+        let selectedPage: NetworkAnalyticsWorkspacePage
+        switch page {
+        case "history": selectedPage = .history
+        case "live": selectedPage = .live
+        default: selectedPage = .overview
+        }
+        self.analyticsWindowController.select(selectedPage)
+        let window = self.analyticsWindowController.show()
+        window.setContentSize(NetworkAnalyticsWindowController.defaultContentSize)
+        window.center()
+    }
+#endif
     
     public override func isAvailable() -> Bool {
         var list: [String] = []

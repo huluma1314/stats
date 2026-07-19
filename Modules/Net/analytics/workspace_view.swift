@@ -42,6 +42,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
     private let pageHost = NSView()
     private let pages: [NetworkAnalyticsWorkspacePage: NSView]
     private var pageButtons: [NetworkAnalyticsWorkspacePage: NSButton] = [:]
+    private var appearanceContainers: [NSView] = []
     private var hostedPage: NSView?
     private(set) var visiblePage: NetworkAnalyticsWorkspacePage?
     private let onSelect: (NetworkAnalyticsWorkspacePage) -> Void
@@ -80,12 +81,29 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
         ]
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
+        self.wantsLayer = true
+        self.updateAppearance()
         self.build(openSettings: openSettings)
+        self.updateAppearance()
         self.select(selectedPage)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        self.updateAppearance()
+    }
+
+    private func updateAppearance() {
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            let isDark = self.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            self.layer?.backgroundColor = NSColor(calibratedWhite: isDark ? 0.10 : 0.965, alpha: 1).cgColor
+            let controlBackground = NSColor(calibratedWhite: isDark ? 0.18 : 1, alpha: 0.96).cgColor
+            self.appearanceContainers.forEach { $0.layer?.backgroundColor = controlBackground }
+        }
     }
 
     func select(_ page: NetworkAnalyticsWorkspacePage) {
@@ -145,6 +163,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
         stack.wantsLayer = true
         stack.layer?.cornerRadius = 8
         stack.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        self.appearanceContainers.append(stack)
 
         for page in NetworkAnalyticsWorkspacePage.allCases {
             let button = self.iconButton(
@@ -172,6 +191,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
         stack.wantsLayer = true
         stack.layer?.cornerRadius = 8
         stack.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        self.appearanceContainers.append(stack)
 
         stack.addArrangedSubview(self.iconButton(
             symbol: "bell",
@@ -205,6 +225,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
         button.identifier = NSUserInterfaceItemIdentifier(identifier)
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
         button.imagePosition = .imageOnly
+        button.contentTintColor = .labelColor
         button.isBordered = false
         button.bezelStyle = .regularSquare
         button.toolTip = description
@@ -268,6 +289,7 @@ private final class ClosureIconButton: NSButton {
         self.identifier = NSUserInterfaceItemIdentifier(identifier)
         self.image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
         self.imagePosition = .imageOnly
+        self.contentTintColor = .labelColor
         self.isBordered = false
         self.toolTip = description
         self.setAccessibilityElement(true)

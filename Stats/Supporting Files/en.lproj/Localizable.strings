@@ -637,3 +637,14 @@
 "Show traffic alerts" = "Show traffic alerts";
 "Refresh current analytics page" = "Refresh current analytics page";
 "Open network settings" = "Open network settings";
+"Application focus" = "Application focus";
+"Application ranking" = "Application ranking";
+"Drag to select an interval. Alert markers show detected anomalies." = "Drag to select an interval. Alert markers show detected anomalies.";
+"Live" = "Live";
+"Network Analytics" = "Network Analytics";
+"Overview" = "Overview";
+"Proxy" = "Proxy";
+"Select an interval in the timeline to filter this ranking." = "Select an interval in the timeline to filter this ranking.";
+"Sorted by current total rate" = "Sorted by current total rate";
+"Traffic timeline" = "Traffic timeline";
+"Upload" = "Upload";

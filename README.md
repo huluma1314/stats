@@ -107,7 +107,14 @@ If you have concerns about these requests, you have a few options:
 ### How to contribute to the project?
 If you want to develop a new feature or you've found something that doesn't work, the first step is to open an issue so the feature or problem can be discussed. Pull requests should only be opened for existing issues and after discussion; otherwise, they may be closed automatically. There are a few cases where this can be skipped: for language changes, and for contributors who have already made significant contributions and whose implementations align well with the project.
 
+## Network Analytics workspace
+
+Open the Network module preview and choose **Open Network Analytics** to launch the
+dedicated overview, history, and live-traffic workspace. The gear button returns to
+the existing Network settings; analytics data remains local to the Mac.
+
 ## Supported languages
+
 - English
 - Polski
 - Українська

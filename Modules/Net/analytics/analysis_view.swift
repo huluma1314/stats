@@ -37,6 +37,7 @@ internal final class TrafficAnalysisView: NSView {
     private let detail: ApplicationDetailView
     private let contentStack = FlippedStackView()
     private let secondaryOptionsRow = NSStackView()
+    private weak var toolbarStack: NSStackView?
     private var appearanceCards: [NSView] = []
 
     init(
@@ -100,15 +101,31 @@ internal final class TrafficAnalysisView: NSView {
         self.contentStack.distribution = .fill
         self.contentStack.spacing = 12
         self.contentStack.translatesAutoresizingMaskIntoConstraints = false
-        self.setContentCompressionResistancePriority(.required, for: .vertical)
+        self.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         self.contentStack.setContentCompressionResistancePriority(.required, for: .vertical)
-        self.heightAnchor.constraint(greaterThanOrEqualToConstant: 700).isActive = true
-        self.addSubview(self.contentStack)
+        let preferredHeight = self.heightAnchor.constraint(greaterThanOrEqualToConstant: 700)
+        preferredHeight.priority = .init(1)
+        preferredHeight.isActive = true
+        let scrollView = NSScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.documentView = self.contentStack
+        self.addSubview(scrollView)
+        let documentHeight = self.contentStack.heightAnchor.constraint(greaterThanOrEqualToConstant: 680)
+        documentHeight.priority = .defaultLow
         NSLayoutConstraint.activate([
-            self.contentStack.leadingAnchor.constraint(equalTo: self.leadingAnchor),
-            self.contentStack.trailingAnchor.constraint(equalTo: self.trailingAnchor),
-            self.contentStack.topAnchor.constraint(equalTo: self.topAnchor),
-            self.contentStack.bottomAnchor.constraint(equalTo: self.bottomAnchor)
+            scrollView.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: self.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+            self.contentStack.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor, constant: 18),
+            self.contentStack.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor, constant: -18),
+            self.contentStack.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor, constant: 12),
+            self.contentStack.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor, constant: -36),
+            documentHeight
         ])
 
         self.rangeControl.segmentCount = TrafficRange.allCases.count
@@ -119,6 +136,7 @@ internal final class TrafficAnalysisView: NSView {
         self.rangeControl.identifier = NSUserInterfaceItemIdentifier("traffic-range")
         self.rangeControl.target = self
         self.rangeControl.action = #selector(self.controlsChanged)
+        self.rangeControl.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
         self.chartModeControl.segmentCount = 2
         self.chartModeControl.setLabel(localizedString("Line"), forSegment: 0)
@@ -127,6 +145,8 @@ internal final class TrafficAnalysisView: NSView {
         self.chartModeControl.identifier = NSUserInterfaceItemIdentifier("traffic-chart-mode")
         self.chartModeControl.target = self
         self.chartModeControl.action = #selector(self.controlsChanged)
+        self.chartModeControl.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        self.chartModeControl.widthAnchor.constraint(equalToConstant: 108).isActive = true
 
         self.refreshControl.removeAllItems()
         for mode in TrafficRefreshMode.allCases {
@@ -136,11 +156,15 @@ internal final class TrafficAnalysisView: NSView {
         self.refreshControl.identifier = NSUserInterfaceItemIdentifier("traffic-refresh-mode")
         self.refreshControl.target = self
         self.refreshControl.action = #selector(self.controlsChanged)
+        self.refreshControl.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        self.refreshControl.widthAnchor.constraint(equalToConstant: 75).isActive = true
 
         self.reloadNetworkMenu()
         self.networkControl.target = self
         self.networkControl.identifier = NSUserInterfaceItemIdentifier("traffic-network")
         self.networkControl.action = #selector(self.controlsChanged)
+        self.networkControl.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        self.networkControl.widthAnchor.constraint(equalToConstant: 110).isActive = true
 
         self.exportControl.removeAllItems()
         self.exportControl.addItem(withTitle: localizedString("Export"))
@@ -149,6 +173,8 @@ internal final class TrafficAnalysisView: NSView {
         self.exportControl.target = self
         self.exportControl.identifier = NSUserInterfaceItemIdentifier("traffic-export")
         self.exportControl.action = #selector(self.exportChanged)
+        self.exportControl.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        self.exportControl.widthAnchor.constraint(equalToConstant: 80).isActive = true
 
         self.moreControl.addItem(withTitle: localizedString("More"))
         self.moreControl.addItem(withTitle: localizedString("Full timeline"))
@@ -169,6 +195,8 @@ internal final class TrafficAnalysisView: NSView {
         self.moreControl.identifier = NSUserInterfaceItemIdentifier("traffic-more-options")
         self.moreControl.target = self
         self.moreControl.action = #selector(self.moreChanged)
+        self.moreControl.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        self.moreControl.widthAnchor.constraint(equalToConstant: 90).isActive = true
         self.updateMoreMenuStates()
 
         self.dateButton.image = NSImage(systemSymbolName: "calendar.badge.clock", accessibilityDescription: localizedString("Custom time range"))
@@ -194,6 +222,7 @@ internal final class TrafficAnalysisView: NSView {
         rangeRow.orientation = .horizontal
         rangeRow.alignment = .centerY
         rangeRow.spacing = 8
+        rangeRow.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let primaryOptionsRow = NSStackView(views: [
             self.networkControl,
@@ -204,6 +233,7 @@ internal final class TrafficAnalysisView: NSView {
         primaryOptionsRow.orientation = .horizontal
         primaryOptionsRow.alignment = .centerY
         primaryOptionsRow.spacing = 8
+        primaryOptionsRow.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         self.secondaryOptionsRow.setViews([
             self.chartModeControl,
@@ -213,12 +243,16 @@ internal final class TrafficAnalysisView: NSView {
         self.secondaryOptionsRow.orientation = .horizontal
         self.secondaryOptionsRow.alignment = .centerY
         self.secondaryOptionsRow.spacing = 8
+        self.secondaryOptionsRow.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let controls = FlippedStackView(views: [rangeRow, primaryOptionsRow, self.secondaryOptionsRow])
-        controls.orientation = .vertical
-        controls.alignment = .leading
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
+        controls.distribution = .equalSpacing
         controls.spacing = 7
         controls.identifier = NSUserInterfaceItemIdentifier("history-toolbar")
+        controls.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        self.toolbarStack = controls
         self.contentStack.addArrangedSubview(controls)
         controls.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
 
@@ -244,14 +278,29 @@ internal final class TrafficAnalysisView: NSView {
         self.heatmap.isHidden = true
         let timelineTitle = NSTextField(labelWithString: localizedString("Traffic timeline"))
         timelineTitle.font = .systemFont(ofSize: 14, weight: .semibold)
+        timelineTitle.alignment = .left
         let timelineHelp = NSTextField(labelWithString: localizedString("Drag to select an interval. Alert markers show detected anomalies."))
         timelineHelp.font = .systemFont(ofSize: 11)
         timelineHelp.textColor = .secondaryLabelColor
+        timelineHelp.alignment = .left
+        timelineTitle.setContentCompressionResistancePriority(.required, for: .vertical)
+        timelineHelp.setContentCompressionResistancePriority(.required, for: .vertical)
+        self.hoverLabel.setContentCompressionResistancePriority(.required, for: .vertical)
         let timelineStack = FlippedStackView(views: [timelineTitle, timelineHelp, self.hoverLabel, self.lineChart, self.heatmap])
         timelineStack.orientation = .vertical
         timelineStack.alignment = .width
         timelineStack.spacing = 6
         let timelineCard = self.card(containing: timelineStack, identifier: "history-timeline-card")
+        let visibleTimelineTitle = NSTextField(labelWithString: localizedString("Traffic timeline"))
+        visibleTimelineTitle.font = .systemFont(ofSize: 14, weight: .semibold)
+        let visibleTimelineHelp = NSTextField(labelWithString: localizedString("Drag to select an interval. Alert markers show detected anomalies."))
+        visibleTimelineHelp.font = .systemFont(ofSize: 11)
+        visibleTimelineHelp.textColor = .secondaryLabelColor
+        let visibleTimelineHeader = NSStackView(views: [visibleTimelineTitle, visibleTimelineHelp])
+        visibleTimelineHeader.orientation = .vertical
+        visibleTimelineHeader.alignment = .leading
+        visibleTimelineHeader.spacing = 2
+        self.contentStack.addArrangedSubview(visibleTimelineHeader)
         self.contentStack.addArrangedSubview(timelineCard)
         timelineCard.widthAnchor.constraint(equalTo: self.contentStack.widthAnchor).isActive = true
 
@@ -303,9 +352,11 @@ internal final class TrafficAnalysisView: NSView {
         }
         let rankingTitle = NSTextField(labelWithString: localizedString("Application ranking"))
         rankingTitle.font = .systemFont(ofSize: 14, weight: .semibold)
+        rankingTitle.alignment = .left
         let rankingHelp = NSTextField(labelWithString: localizedString("Select an interval in the timeline to filter this ranking."))
         rankingHelp.font = .systemFont(ofSize: 11)
         rankingHelp.textColor = .secondaryLabelColor
+        rankingHelp.alignment = .left
         let rankingStack = FlippedStackView(views: [rankingTitle, rankingHelp, self.table.rootView(), self.detail])
         rankingStack.orientation = .vertical
         rankingStack.alignment = .width
@@ -321,7 +372,19 @@ internal final class TrafficAnalysisView: NSView {
 
     override func layout() {
         super.layout()
-        let compact = self.bounds.width < 900
+        self.updateCompactLayout(width: self.frame.width)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        self.updateCompactLayout(width: newSize.width)
+    }
+
+    private func updateCompactLayout(width: CGFloat) {
+        let compact = width < 900
+        self.toolbarStack?.orientation = compact ? .vertical : .horizontal
+        self.toolbarStack?.alignment = compact ? .leading : .centerY
+        self.toolbarStack?.distribution = compact ? .fill : .equalSpacing
         if self.chartModeControl.isHidden != compact {
             self.chartModeControl.isHidden = compact
         }
@@ -349,6 +412,7 @@ internal final class TrafficAnalysisView: NSView {
         box.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
         box.wantsLayer = true
         box.layer?.cornerRadius = 8
+        box.layer?.borderWidth = 0.5
         box.identifier = NSUserInterfaceItemIdentifier(identifier)
         box.heightAnchor.constraint(equalToConstant: 72).isActive = true
         self.appearanceCards.append(box)
@@ -362,6 +426,7 @@ internal final class TrafficAnalysisView: NSView {
         card.identifier = NSUserInterfaceItemIdentifier(identifier)
         card.wantsLayer = true
         card.layer?.cornerRadius = 10
+        card.layer?.borderWidth = 0.5
         content.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(content)
         NSLayoutConstraint.activate([
@@ -378,7 +443,11 @@ internal final class TrafficAnalysisView: NSView {
     private func updateAppearanceColors() {
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
             let backgroundColor = NSColor.controlBackgroundColor.cgColor
-            self.appearanceCards.forEach { $0.layer?.backgroundColor = backgroundColor }
+            let borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+            self.appearanceCards.forEach {
+                $0.layer?.backgroundColor = backgroundColor
+                $0.layer?.borderColor = borderColor
+            }
         }
     }
 
@@ -724,6 +793,7 @@ internal final class LiveTrafficView: NSView {
         stack.orientation = .vertical
         stack.alignment = .width
         stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 18, bottom: 12, right: 18)
         stack.translatesAutoresizingMaskIntoConstraints = false
         let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -758,7 +828,6 @@ internal final class LiveTrafficView: NSView {
         controls.alignment = .centerY
         controls.spacing = 10
         stack.addArrangedSubview(controls)
-        controls.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         let rateContent = NSStackView(views: [
             self.rateMetric(title: localizedString("Download"), value: self.downloadLabel, color: .systemBlue),
@@ -780,16 +849,24 @@ internal final class LiveTrafficView: NSView {
 
         let chartTitle = NSTextField(labelWithString: localizedString("Live application traffic"))
         chartTitle.font = .systemFont(ofSize: 14, weight: .semibold)
-        let chartHeader = NSStackView(views: [chartTitle, NSView(), self.windowControl])
-        chartHeader.orientation = .horizontal
-        chartHeader.alignment = .centerY
+        chartTitle.alignment = .left
+        chartTitle.textColor = .labelColor
         self.chart.translatesAutoresizingMaskIntoConstraints = false
-        let chartStack = FlippedStackView(views: [chartHeader, self.chart])
-        chartStack.orientation = .vertical
-        chartStack.alignment = .width
-        chartStack.spacing = 8
-        let chartCard = self.card(containing: chartStack, identifier: "live-chart-card")
-        chartCard.heightAnchor.constraint(equalToConstant: 218).isActive = true
+        let chartContent = NSView()
+        chartContent.addSubview(self.chart)
+        NSLayoutConstraint.activate([
+            self.chart.leadingAnchor.constraint(equalTo: chartContent.leadingAnchor),
+            self.chart.trailingAnchor.constraint(equalTo: chartContent.trailingAnchor),
+            self.chart.topAnchor.constraint(equalTo: chartContent.topAnchor),
+            self.chart.bottomAnchor.constraint(equalTo: chartContent.bottomAnchor)
+        ])
+        let chartControls = NSStackView(views: [chartTitle, NSView(), self.windowControl])
+        chartControls.orientation = .horizontal
+        chartControls.alignment = .centerY
+        chartControls.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        stack.addArrangedSubview(chartControls)
+        let chartCard = self.card(containing: chartContent, identifier: "live-chart-card")
+        chartCard.heightAnchor.constraint(equalToConstant: 190).isActive = true
         stack.addArrangedSubview(chartCard)
 
         let activeTitle = NSTextField(labelWithString: localizedString("Active processes"))
@@ -809,7 +886,9 @@ internal final class LiveTrafficView: NSView {
         activeCard.heightAnchor.constraint(equalToConstant: 174).isActive = true
         stack.addArrangedSubview(activeCard)
 
-        [rateCard, chartCard, activeCard].forEach { $0.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        [controls, rateCard, chartControls, chartCard, activeCard].forEach {
+            $0.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -stack.edgeInsets.left - stack.edgeInsets.right).isActive = true
+        }
         self.updateCardAppearance()
     }
 
@@ -819,6 +898,7 @@ internal final class LiveTrafficView: NSView {
         card.translatesAutoresizingMaskIntoConstraints = false
         card.wantsLayer = true
         card.layer?.cornerRadius = 10
+        card.layer?.borderWidth = 0.5
         content.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(content)
         NSLayoutConstraint.activate([
@@ -845,7 +925,14 @@ internal final class LiveTrafficView: NSView {
     }
 
     private func updateCardAppearance() {
-        self.appearanceCards.forEach { $0.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor }
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            let backgroundColor = NSColor.controlBackgroundColor.cgColor
+            let borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+            self.appearanceCards.forEach {
+                $0.layer?.backgroundColor = backgroundColor
+                $0.layer?.borderColor = borderColor
+            }
+        }
     }
 
     private func updateFocusControl(_ applications: [ApplicationTrafficSummary]) {
@@ -902,6 +989,10 @@ internal final class TrafficCustomRangePopoverView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: 700)
     }
 
     private func build() {
