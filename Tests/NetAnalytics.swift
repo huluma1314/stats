@@ -3865,6 +3865,44 @@ final class NetAnalyticsTests: XCTestCase {
         }
     }
 
+    func testCompactHistoryMoreMenuChangesChartAndRefreshMode() throws {
+        let suite = "net-history-compact-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = TrafficSelectionStore(defaults: defaults)
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let view = TrafficAnalysisView(
+            engine: TrafficAnalyticsEngine(repository: repository),
+            repository: repository,
+            selectionStore: store
+        )
+        view.frame = NSRect(x: 0, y: 0, width: 720, height: 720)
+        view.layoutSubtreeIfNeeded()
+
+        let descendants = self.descendants(of: view)
+        let more = try XCTUnwrap(descendants.compactMap { $0 as? NSPopUpButton }.first {
+            $0.identifier?.rawValue == "traffic-more-options"
+        })
+        let chartMode = try XCTUnwrap(descendants.compactMap { $0 as? NSSegmentedControl }.first {
+            $0.identifier?.rawValue == "traffic-chart-mode"
+        })
+        let refresh = try XCTUnwrap(descendants.compactMap { $0 as? NSPopUpButton }.first {
+            $0.identifier?.rawValue == "traffic-refresh-mode"
+        })
+        XCTAssertTrue(chartMode.isHidden)
+        XCTAssertTrue(refresh.isHidden)
+
+        let heatmapIndex = try XCTUnwrap(more.itemArray.firstIndex { ($0.representedObject as? String) == "chart-heatmap" })
+        more.selectItem(at: heatmapIndex)
+        more.sendAction(more.action, to: more.target)
+        XCTAssertEqual(store.load().chartMode, .heatmap)
+
+        let manualIndex = try XCTUnwrap(more.itemArray.firstIndex { ($0.representedObject as? String) == "refresh-manual" })
+        more.selectItem(at: manualIndex)
+        more.sendAction(more.action, to: more.target)
+        XCTAssertEqual(store.load().refreshMode, .manual)
+    }
+
     private func waitUntil(timeout: TimeInterval = 1, condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {

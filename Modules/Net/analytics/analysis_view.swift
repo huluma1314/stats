@@ -123,6 +123,7 @@ internal final class TrafficAnalysisView: NSView {
         self.chartModeControl.setLabel(localizedString("Line"), forSegment: 0)
         self.chartModeControl.setLabel(localizedString("Heatmap"), forSegment: 1)
         self.chartModeControl.selectedSegment = 0
+        self.chartModeControl.identifier = NSUserInterfaceItemIdentifier("traffic-chart-mode")
         self.chartModeControl.target = self
         self.chartModeControl.action = #selector(self.controlsChanged)
 
@@ -131,6 +132,7 @@ internal final class TrafficAnalysisView: NSView {
             self.refreshControl.addItem(withTitle: self.refreshTitle(mode))
         }
         self.refreshControl.selectItem(at: 2)
+        self.refreshControl.identifier = NSUserInterfaceItemIdentifier("traffic-refresh-mode")
         self.refreshControl.target = self
         self.refreshControl.action = #selector(self.controlsChanged)
 
@@ -155,6 +157,14 @@ internal final class TrafficAnalysisView: NSView {
         self.moreControl.addItem(withTitle: localizedString("Show proxy labels"))
         self.moreControl.addItem(withTitle: localizedString("Show alert markers"))
         self.moreControl.addItem(withTitle: localizedString("Include local network"))
+        self.moreControl.addItem(withTitle: localizedString("Line"))
+        self.moreControl.lastItem?.representedObject = "chart-line"
+        self.moreControl.addItem(withTitle: localizedString("Heatmap"))
+        self.moreControl.lastItem?.representedObject = "chart-heatmap"
+        for mode in TrafficRefreshMode.allCases {
+            self.moreControl.addItem(withTitle: "\(localizedString("Refresh")): \(self.refreshTitle(mode))")
+            self.moreControl.lastItem?.representedObject = "refresh-\(mode.rawValue)"
+        }
         self.moreControl.identifier = NSUserInterfaceItemIdentifier("traffic-more-options")
         self.moreControl.target = self
         self.moreControl.action = #selector(self.moreChanged)
@@ -311,9 +321,15 @@ internal final class TrafficAnalysisView: NSView {
     override func layout() {
         super.layout()
         let compact = self.bounds.width < 900
-        self.chartModeControl.isHidden = compact
-        self.refreshControl.isHidden = compact
-        self.moreControl.isHidden = false
+        if self.chartModeControl.isHidden != compact {
+            self.chartModeControl.isHidden = compact
+        }
+        if self.refreshControl.isHidden != compact {
+            self.refreshControl.isHidden = compact
+        }
+        if self.moreControl.isHidden {
+            self.moreControl.isHidden = false
+        }
     }
 
     private func summaryCard(title: String, field: NSTextField, identifier: String) -> NSView {
@@ -431,7 +447,28 @@ internal final class TrafficAnalysisView: NSView {
 
     @objc private func moreChanged() {
         let selected = self.moreControl.indexOfSelectedItem
+        let representedObject = self.moreControl.selectedItem?.representedObject as? String
         self.moreControl.selectItem(at: 0)
+        if representedObject == "chart-line" || representedObject == "chart-heatmap" {
+            self.selection.chartMode = representedObject == "chart-heatmap" ? .heatmap : .line
+            self.chartModeControl.selectedSegment = self.selection.chartMode == .heatmap ? 1 : 0
+            self.lineChart.isHidden = self.selection.chartMode != .line
+            self.heatmap.isHidden = self.selection.chartMode != .heatmap
+            self.persistSelection()
+            self.updateMoreMenuStates()
+            self.reload()
+            return
+        }
+        if let representedObject, representedObject.hasPrefix("refresh-"),
+           let mode = TrafficRefreshMode(rawValue: String(representedObject.dropFirst("refresh-".count))) {
+            self.selection.refreshMode = mode
+            self.refreshControl.selectItem(at: TrafficRefreshMode.allCases.firstIndex(of: mode) ?? 0)
+            self.scheduleRefresh()
+            self.persistSelection()
+            self.updateMoreMenuStates()
+            self.reload()
+            return
+        }
         switch selected {
         case 1:
             self.selection.selectedInterval = nil
@@ -561,6 +598,16 @@ internal final class TrafficAnalysisView: NSView {
         ]
         for (index, enabled) in states where self.moreControl.itemArray.indices.contains(index) {
             self.moreControl.item(at: index)?.state = enabled ? .on : .off
+        }
+        for item in self.moreControl.itemArray {
+            guard let value = item.representedObject as? String else { continue }
+            if value == "chart-line" {
+                item.state = self.selection.chartMode == .line ? .on : .off
+            } else if value == "chart-heatmap" {
+                item.state = self.selection.chartMode == .heatmap ? .on : .off
+            } else if value.hasPrefix("refresh-") {
+                item.state = value == "refresh-\(self.selection.refreshMode.rawValue)" ? .on : .off
+            }
         }
     }
 
