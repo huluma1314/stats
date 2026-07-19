@@ -63,8 +63,9 @@ internal class Preview: PreviewWrapper {
     private var liveTrafficView: LiveTrafficView? = nil
     private var outerWidthConstraint: NSLayoutConstraint? = nil
     private let analyticsRepository: TrafficHistoryRepository
-    private lazy var analyticsEngine = TrafficAnalyticsEngine(repository: self.analyticsRepository)
-    private let ruleStore = TrafficRuleStore()
+    private let analyticsEngine: TrafficAnalyticsEngine
+    private let ruleStore: TrafficRuleStore
+    var openAnalyticsCallback: () -> Void = {}
     private var currentPage: NetworkPreviewPage = NetworkPreviewPage(
         storedRawValue: Store.shared.string(key: NetworkPreviewPage.storageKey, defaultValue: NetworkPreviewPage.realtime.rawValue)
     )
@@ -95,9 +96,13 @@ internal class Preview: PreviewWrapper {
     
     public init(
         _ module: ModuleType,
-        analyticsRepository: TrafficHistoryRepository = TrafficHistoryRepository(store: LevelDBTrafficStore())
+        analyticsRepository: TrafficHistoryRepository = TrafficHistoryRepository(store: LevelDBTrafficStore()),
+        analyticsEngine: TrafficAnalyticsEngine? = nil,
+        ruleStore: TrafficRuleStore = TrafficRuleStore()
     ) {
         self.analyticsRepository = analyticsRepository
+        self.analyticsEngine = analyticsEngine ?? TrafficAnalyticsEngine(repository: analyticsRepository)
+        self.ruleStore = ruleStore
         super.init(type: module)
 
         // PreviewWrapper defaults to gravity-area sizing. That works for the
@@ -214,7 +219,18 @@ internal class Preview: PreviewWrapper {
         }
         self.pageControl = control
         container.addArrangedSubview(control)
+        let openAnalytics = NSButton(
+            title: localizedString("Open Network Analytics"),
+            target: self,
+            action: #selector(self.openAnalytics)
+        )
+        openAnalytics.bezelStyle = .rounded
+        container.addArrangedSubview(openAnalytics)
         return container
+    }
+
+    @objc private func openAnalytics() {
+        self.openAnalyticsCallback()
     }
 
     private func placeholderPage(title: String) -> NSView {

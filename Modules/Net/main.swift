@@ -149,6 +149,7 @@ public class Network: Module {
     private var processReader: ProcessReader? = nil
     private var connectivityReader: ConnectivityReader? = nil
     private let analyticsCoordinator: TrafficAnalyticsCoordinator
+    private let analyticsWindowController: NetworkAnalyticsWindowController
     
     private let ipUpdater = NSBackgroundActivityScheduler(identifier: "eu.exelban.Stats.Network.IP")
     
@@ -174,6 +175,9 @@ public class Network: Module {
     
     public init() {
         let analyticsRepository = TrafficHistoryRepository(store: LevelDBTrafficStore())
+        let analyticsEngine = TrafficAnalyticsEngine(repository: analyticsRepository)
+        let analyticsRuleStore = TrafficRuleStore()
+        let analyticsNetworkRegistry = NetworkRegistry()
         let analyticsNotifier = RuntimeTrafficAlertNotifier()
         self.analyticsCoordinator = TrafficAnalyticsCoordinator(
             repository: analyticsRepository,
@@ -187,7 +191,25 @@ public class Network: Module {
         self.portalView = Portal(.network)
         self.notificationsView = Notifications(.network)
         analyticsNotifier.notifications = self.notificationsView
-        self.previewView = Preview(.network, analyticsRepository: analyticsRepository)
+        self.analyticsWindowController = NetworkAnalyticsWindowController(
+            repository: analyticsRepository,
+            ruleStore: analyticsRuleStore,
+            networkRegistry: analyticsNetworkRegistry,
+            analyticsEngine: analyticsEngine,
+            openSettings: {
+                NotificationCenter.default.post(
+                    name: .toggleSettings,
+                    object: nil,
+                    userInfo: ["module": ModuleType.network.stringValue]
+                )
+            }
+        )
+        self.previewView = Preview(
+            .network,
+            analyticsRepository: analyticsRepository,
+            analyticsEngine: analyticsEngine,
+            ruleStore: analyticsRuleStore
+        )
         
         super.init(
             moduleType: .network,
@@ -197,6 +219,9 @@ public class Network: Module {
             notifications: self.notificationsView,
             preview: self.previewView
         )
+        self.previewView.openAnalyticsCallback = { [weak self] in
+            self?.analyticsWindowController.show()
+        }
         guard self.available else { return }
         
         self.usageReader = UsageReader(.network) { [weak self] value in

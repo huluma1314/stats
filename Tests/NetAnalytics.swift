@@ -15,6 +15,86 @@ final class NetAnalyticsTests: XCTestCase {
         executablePath: nil
     )
 
+    func testAnalyticsWorkspaceShowReusesWindow() {
+        let controller = self.makeWorkspaceController()
+
+        let first = controller.show()
+        let second = controller.show()
+
+        XCTAssertTrue(first === second)
+        first.close()
+    }
+
+    func testAnalyticsWorkspacePersistsSelectedPage() {
+        let suiteName = "NetAnalyticsTests.workspace.page.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let repository = TrafficHistoryRepository(store: InMemoryTrafficStore())
+        let ruleStore = TrafficRuleStore(defaults: defaults)
+        let networkRegistry = NetworkRegistry(defaults: defaults)
+        let first = NetworkAnalyticsWindowController(
+            repository: repository,
+            ruleStore: ruleStore,
+            networkRegistry: networkRegistry,
+            defaults: defaults,
+            openSettings: {}
+        )
+
+        first.select(.history)
+
+        let restored = NetworkAnalyticsWindowController(
+            repository: repository,
+            ruleStore: ruleStore,
+            networkRegistry: networkRegistry,
+            defaults: defaults,
+            openSettings: {}
+        )
+        XCTAssertEqual(restored.selectedPage, .history)
+    }
+
+    func testAnalyticsWorkspaceUsesDefaultWindowSize() {
+        let controller = self.makeWorkspaceController()
+        let window = controller.show()
+        defer { window.close() }
+
+        XCTAssertEqual(window.contentRect(forFrameRect: window.frame).size.width, 1080, accuracy: 0.5)
+        XCTAssertEqual(window.contentRect(forFrameRect: window.frame).size.height, 760, accuracy: 0.5)
+    }
+
+    func testAnalyticsWorkspaceUsesMinimumWindowSize() {
+        let controller = self.makeWorkspaceController()
+        let window = controller.show()
+        defer { window.close() }
+
+        XCTAssertEqual(window.contentMinSize.width, 720, accuracy: 0.5)
+        XCTAssertEqual(window.contentMinSize.height, 480, accuracy: 0.5)
+    }
+
+    func testAnalyticsWorkspaceDoesNotContainSettingsSidebar() {
+        let controller = self.makeWorkspaceController()
+        let window = controller.show()
+        defer { window.close() }
+
+        let root = try? XCTUnwrap(window.contentView as? NetworkAnalyticsWorkspaceView)
+        XCTAssertNotNil(root)
+        XCTAssertFalse(root.map {
+            self.descendants(of: $0).contains(where: { $0 is NSSplitView })
+        } ?? true)
+    }
+
+    private func makeWorkspaceController() -> NetworkAnalyticsWindowController {
+        let suiteName = "NetAnalyticsTests.workspace.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return NetworkAnalyticsWindowController(
+            repository: TrafficHistoryRepository(store: InMemoryTrafficStore()),
+            ruleStore: TrafficRuleStore(defaults: defaults),
+            networkRegistry: NetworkRegistry(defaults: defaults),
+            defaults: defaults,
+            openSettings: {}
+        )
+    }
+
     func testDeltaUsesMonotonicCounterGrowth() {
         let previous = self.counter(startToken: 1, download: 900, upload: 500)
         let current = self.counter(startToken: 1, download: 1_200, upload: 650)

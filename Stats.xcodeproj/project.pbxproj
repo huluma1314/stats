@@ -30,6 +30,8 @@
 		A1000001000000000000002F /* network_registry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000002E /* network_registry.swift */; };
 		A10000010000000000000031 /* runtime_rules.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000030 /* runtime_rules.swift */; };
 		A10000010000000000000033 /* icon_resolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000032 /* icon_resolver.swift */; };
+		A10000010000000000000035 /* workspace_window.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000034 /* workspace_window.swift */; };
+		A10000010000000000000037 /* workspace_view.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000036 /* workspace_view.swift */; };
 		A10000010000000000000003 /* NetAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000004 /* NetAnalytics.swift */; };
 		A10000010000000000000001 /* UserContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000002 /* UserContext.swift */; };
 		4A05F9BD83C04F70BFFF7F37 /* Kit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 369463B2B7EA4AF0A895A9B6 /* Kit.swift */; };
@@ -579,6 +581,8 @@
 		A1000001000000000000002E /* network_registry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = network_registry.swift; sourceTree = "<group>"; };
 		A10000010000000000000030 /* runtime_rules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = runtime_rules.swift; sourceTree = "<group>"; };
 		A10000010000000000000032 /* icon_resolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = icon_resolver.swift; sourceTree = "<group>"; };
+		A10000010000000000000034 /* workspace_window.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = workspace_window.swift; sourceTree = "<group>"; };
+		A10000010000000000000036 /* workspace_view.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = workspace_view.swift; sourceTree = "<group>"; };
 		A10000010000000000000004 /* NetAnalytics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetAnalytics.swift; sourceTree = "<group>"; };
 		A10000010000000000000002 /* UserContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserContext.swift; sourceTree = "<group>"; };
 		0192A7ED2B017E190056F918 /* hi */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = hi; path = hi.lproj/Localizable.strings; sourceTree = "<group>"; };
@@ -1252,6 +1256,8 @@
 				A1000001000000000000002E /* network_registry.swift */,
 				A10000010000000000000030 /* runtime_rules.swift */,
 				A10000010000000000000032 /* icon_resolver.swift */,
+				A10000010000000000000034 /* workspace_window.swift */,
+				A10000010000000000000036 /* workspace_view.swift */,
 			);
 			path = analytics;
 			sourceTree = "<group>";
@@ -2383,6 +2389,8 @@
 				A1000001000000000000002F /* network_registry.swift in Sources */,
 				A10000010000000000000031 /* runtime_rules.swift in Sources */,
 				A10000010000000000000033 /* icon_resolver.swift in Sources */,
+				A10000010000000000000035 /* workspace_window.swift in Sources */,
+				A10000010000000000000037 /* workspace_view.swift in Sources */,
 				9A3E17DB247A94BC00449CD1 /* readers.swift in Sources */,
 				9A3E17EA247B07BF00449CD1 /* popup.swift in Sources */,
 				5C50DB402FAF4CBE008BACB6 /* preview.swift in Sources */,
