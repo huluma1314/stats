@@ -9,6 +9,9 @@ import Kit
 internal final class TrafficOverviewView: NSView {
     private let engine: TrafficAnalyticsEngine
     private let planStore: TrafficRuleStore
+    private let networkRegistry: NetworkRegistry
+    private var selectedNetworkID: String?
+    private let networkControl = NSPopUpButton()
     private let periodLabel = NSTextField(labelWithString: "—")
     private let usedLabel = NSTextField(labelWithString: "—")
     private let quotaLabel = NSTextField(labelWithString: "—")
@@ -16,9 +19,14 @@ internal final class TrafficOverviewView: NSView {
     private let trendView = TrafficOverviewTrendView()
     private let appsView = TrafficOverviewAppsView()
 
-    init(engine: TrafficAnalyticsEngine, planStore: TrafficRuleStore) {
+    init(
+        engine: TrafficAnalyticsEngine,
+        planStore: TrafficRuleStore,
+        networkRegistry: NetworkRegistry = NetworkRegistry()
+    ) {
         self.engine = engine
         self.planStore = planStore
+        self.networkRegistry = networkRegistry
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
         self.build()
@@ -29,10 +37,18 @@ internal final class TrafficOverviewView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func reload() {
+    func reload(networkID: String? = nil) {
+        if let networkID {
+            self.selectedNetworkID = networkID
+        }
         let now = Date()
-        let snapshot = self.engine.snapshot(for: TrafficAnalyticsQuery(range: .currentMonth, now: now))
-        let plan = self.planStore.networkPlan()
+        let plan = self.selectedNetworkID.map { self.planStore.networkPlan(for: $0) } ?? self.planStore.networkPlan()
+        let snapshot = self.engine.snapshot(for: TrafficAnalyticsQuery(
+            range: .currentMonth,
+            networkID: self.selectedNetworkID,
+            billingCycleDay: plan.billingCycleDay,
+            now: now
+        ))
         self.periodLabel.stringValue = "\(localizedString("Billing cycle day")): \(plan.billingCycleDay)"
         self.usedLabel.stringValue = Units(bytes: Int64(snapshot.total)).getReadableMemory()
         if let limit = plan.byteLimit {
@@ -53,7 +69,12 @@ internal final class TrafficOverviewView: NSView {
             self.forecastLabel.stringValue = localizedString("Insufficient data")
         }
 
-        let week = self.engine.snapshot(for: TrafficAnalyticsQuery(range: .sevenDays, now: now))
+        let week = self.engine.snapshot(for: TrafficAnalyticsQuery(
+            range: .sevenDays,
+            networkID: self.selectedNetworkID,
+            billingCycleDay: plan.billingCycleDay,
+            now: now
+        ))
         self.trendView.buckets = Array(week.buckets.suffix(7))
         self.appsView.update(Array(snapshot.ranking.prefix(6)), total: max(snapshot.total, 1))
     }
@@ -74,6 +95,19 @@ internal final class TrafficOverviewView: NSView {
             stack.topAnchor.constraint(equalTo: self.topAnchor),
             stack.bottomAnchor.constraint(equalTo: self.bottomAnchor)
         ])
+
+        self.reloadNetworkMenu()
+        self.networkControl.target = self
+        self.networkControl.action = #selector(self.networkChanged)
+        let networkRow = NSStackView(views: [
+            NSTextField(labelWithString: localizedString("Network")),
+            self.networkControl
+        ])
+        networkRow.orientation = .horizontal
+        networkRow.alignment = .centerY
+        networkRow.spacing = 8
+        stack.addArrangedSubview(networkRow)
+        networkRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         self.usedLabel.font = .systemFont(ofSize: 32, weight: .semibold)
         let usedBlock = NSStackView(views: [
@@ -129,6 +163,28 @@ internal final class TrafficOverviewView: NSView {
         stack.addSubview(hero, positioned: .above, relativeTo: nil)
         stack.addSubview(trend, positioned: .above, relativeTo: nil)
         stack.addSubview(top, positioned: .above, relativeTo: nil)
+    }
+
+    private func reloadNetworkMenu() {
+        self.networkControl.removeAllItems()
+        self.networkControl.addItem(withTitle: localizedString("All networks"))
+        for registered in self.networkRegistry.all() {
+            self.networkControl.addItem(withTitle: self.networkRegistry.displayName(for: registered.identity.id))
+            self.networkControl.lastItem?.representedObject = registered.identity.id
+        }
+        if let selectedNetworkID,
+           let index = self.networkControl.itemArray.firstIndex(where: { $0.representedObject as? String == selectedNetworkID }) {
+            self.networkControl.selectItem(at: index)
+        } else {
+            self.networkControl.selectItem(at: 0)
+        }
+    }
+
+    @objc private func networkChanged() {
+        self.selectedNetworkID = self.networkControl.indexOfSelectedItem <= 0
+            ? nil
+            : self.networkControl.selectedItem?.representedObject as? String
+        self.reload()
     }
 
     private func sectionCard(title: String, value: NSView) -> NSView {

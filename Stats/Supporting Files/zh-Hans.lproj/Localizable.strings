@@ -592,3 +592,9 @@
 "This permanently deletes local traffic analytics history." = "这将永久删除本机流量分析历史。";
 "Network controls are available on this build." = "当前构建支持网络控制。";
 "Block/throttle requires Network Extension entitlement." = "断网/限速需要 Network Extension 签名权限。";
+"Observed networks" = "已发现的网络";
+"No observed networks" = "尚未发现网络";
+"Network alias" = "网络别名";
+"Per-network plan" = "按网络套餐";
+"All-networks default" = "全部网络默认套餐";
+"Billing-cycle day must be between 1 and 31." = "结算日必须在 1 到 31 之间。";

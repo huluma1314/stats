@@ -92,6 +92,8 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
     private var widgetThresholdSection: PreferencesSection? = nil
     private let textWidgetHelpPanel: HelpHUD = HelpHUD(textWidgetHelp)
     private let ruleStore = TrafficRuleStore()
+    private let networkRegistry = NetworkRegistry()
+    private var selectedNetworkID: String?
     private let analyticsPreferencesStore = TrafficAnalyticsPreferencesStore()
     
     private var list: [Network_interface] = []
@@ -124,7 +126,13 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
         self.speedUnitValue = networkSpeedUnit(from: Store.shared.string(key: "\(self.title)_speedUnit", defaultValue: self.speedUnitValue)).key
         self.textValue = Store.shared.string(key: "\(self.title)_textWidgetValue", defaultValue: self.textValue)
         self.includeLocalNetwork = self.ruleStore.includeLocalNetwork
-        let plan = self.ruleStore.networkPlan()
+        self.selectedNetworkID = self.networkRegistry.all().first?.identity.id
+        let plan: NetworkPlan
+        if let networkID = self.selectedNetworkID {
+            plan = self.ruleStore.networkPlan(for: networkID)
+        } else {
+            plan = self.ruleStore.networkPlan()
+        }
         self.billingCycleDay = plan.billingCycleDay
         if let limit = plan.byteLimit {
             self.networkQuotaGB = Int(limit / 1_000_000_000)
@@ -174,7 +182,7 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
             )),
             PreferencesRow(localizedString("Billing cycle day"), component: selectView(
                 action: #selector(self.changeBillingCycleDay),
-                items: (1...28).map { KeyValue_t(key: "\($0)", value: "\($0)") },
+                items: (1...31).map { KeyValue_t(key: "\($0)", value: "\($0)") },
                 selected: "\(self.billingCycleDay)"
             )),
             PreferencesRow(localizedString("Monthly quota (GB, 0 = none)"), component: selectView(
@@ -184,6 +192,29 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
             )),
             PreferencesRow(localizedString("Enforcement"), component: NSTextField(labelWithString: enforcementText)),
             PreferencesRow(localizedString("History"), component: clearButton)
+        ]))
+
+        let registeredNetworks = self.networkRegistry.all()
+        let observedNetworkComponent: NSView
+        if registeredNetworks.isEmpty {
+            observedNetworkComponent = NSTextField(labelWithString: localizedString("No observed networks"))
+        } else {
+            let selector = NSPopUpButton()
+            registeredNetworks.forEach { registered in
+                selector.addItem(withTitle: self.networkRegistry.displayName(for: registered.identity.id))
+                selector.lastItem?.representedObject = registered.identity.id
+            }
+            selector.target = self
+            selector.action = #selector(self.changeRegisteredNetwork)
+            observedNetworkComponent = selector
+        }
+        let aliasValue = self.selectedNetworkID.map { self.networkRegistry.displayName(for: $0) } ?? ""
+        let aliasField = self.inputField(id: "networkAlias", value: aliasValue, placeholder: localizedString("Network alias"))
+        aliasField.isEnabled = self.selectedNetworkID != nil
+        self.addArrangedSubview(PreferencesSection(title: localizedString("Observed networks"), [
+            PreferencesRow(localizedString("Network"), component: observedNetworkComponent),
+            PreferencesRow(localizedString("Network alias"), component: aliasField),
+            PreferencesRow(localizedString("Per-network plan"), component: NSTextField(labelWithString: self.selectedNetworkID ?? localizedString("All-networks default")))
         ]))
 
         self.addArrangedSubview(PreferencesSection(title: localizedString("Alerts and automation"), [
@@ -434,6 +465,8 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
             } else if field.identifier == NSUserInterfaceItemIdentifier("text") {
                 self.textValue = field.stringValue
                 Store.shared.set(key: "\(self.title)_textWidgetValue", value: self.textValue)
+            } else if field.identifier == NSUserInterfaceItemIdentifier("networkAlias"), let networkID = self.selectedNetworkID {
+                self.networkRegistry.setAlias(field.stringValue, for: networkID)
             }
         }
     }
@@ -475,6 +508,14 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
         }
     }
 
+    @objc private func changeRegisteredNetwork(_ sender: NSPopUpButton) {
+        guard let networkID = sender.selectedItem?.representedObject as? String else { return }
+        self.selectedNetworkID = networkID
+        let plan = self.ruleStore.networkPlan(for: networkID)
+        self.billingCycleDay = plan.billingCycleDay
+        self.networkQuotaGB = plan.byteLimit.map { Int($0 / 1_000_000_000) } ?? 0
+    }
+
     @objc private func toggleIncludeLocalNetwork(_ sender: NSControl) {
         self.includeLocalNetwork = controlState(sender)
         self.ruleStore.includeLocalNetwork = self.includeLocalNetwork
@@ -483,17 +524,25 @@ internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
     @objc private func changeBillingCycleDay(_ sender: NSMenuItem) {
         guard let key = sender.representedObject as? String, let value = Int(key) else { return }
         self.billingCycleDay = value
-        var plan = self.ruleStore.networkPlan()
+        var plan = self.selectedNetworkID.map { self.ruleStore.networkPlan(for: $0) } ?? self.ruleStore.networkPlan()
         plan.billingCycleDay = value
-        self.ruleStore.save(networkPlan: plan)
+        if let networkID = self.selectedNetworkID {
+            self.ruleStore.save(networkPlan: plan, for: networkID)
+        } else {
+            self.ruleStore.save(networkPlan: plan)
+        }
     }
 
     @objc private func changeNetworkQuota(_ sender: NSMenuItem) {
         guard let key = sender.representedObject as? String, let value = Int(key) else { return }
         self.networkQuotaGB = value
-        var plan = self.ruleStore.networkPlan()
+        var plan = self.selectedNetworkID.map { self.ruleStore.networkPlan(for: $0) } ?? self.ruleStore.networkPlan()
         plan.byteLimit = value == 0 ? nil : UInt64(value) * 1_000_000_000
-        self.ruleStore.save(networkPlan: plan)
+        if let networkID = self.selectedNetworkID {
+            self.ruleStore.save(networkPlan: plan, for: networkID)
+        } else {
+            self.ruleStore.save(networkPlan: plan)
+        }
     }
 
     @objc private func toggleQuotaAlerts(_ sender: NSControl) {

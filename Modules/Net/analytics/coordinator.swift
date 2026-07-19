@@ -101,6 +101,7 @@ public final class TrafficAnalyticsCoordinator {
     private let maintenanceScheduler: TrafficMaintenanceScheduling
     private let maintenanceInterval: TimeInterval
     private let calendar: Calendar
+    private let networkRegistry: NetworkRegistry
 
     private var previousCounters: [String: ProcessTrafficCounter] = [:]
     private var currentNetwork = NetworkIdentity(
@@ -127,7 +128,8 @@ public final class TrafficAnalyticsCoordinator {
         preferencesStore: TrafficAnalyticsPreferencesStore = TrafficAnalyticsPreferencesStore(),
         maintenanceScheduler: TrafficMaintenanceScheduling = DispatchTrafficMaintenanceScheduler(),
         maintenanceInterval: TimeInterval = 6 * 60 * 60,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        networkRegistry: NetworkRegistry = NetworkRegistry()
     ) {
         self.repository = repository
         self.resolver = resolver
@@ -138,6 +140,7 @@ public final class TrafficAnalyticsCoordinator {
         self.maintenanceScheduler = maintenanceScheduler
         self.maintenanceInterval = maintenanceInterval
         self.calendar = calendar
+        self.networkRegistry = networkRegistry
     }
 
     public func start() {
@@ -166,8 +169,12 @@ public final class TrafficAnalyticsCoordinator {
 
     public func updateNetwork(_ network: NetworkIdentity) {
         self.queue.sync {
-            self.currentNetwork = network
+            self.currentNetwork = self.networkRegistry.observe(network, at: self.clock.now()).identity
         }
+    }
+
+    public func registeredNetworks() -> [RegisteredNetwork] {
+        self.queue.sync { self.networkRegistry.all() }
     }
 
     public func ingest(counters: [ProcessTrafficCounter]) {
@@ -332,12 +339,13 @@ public final class TrafficAnalyticsCoordinator {
             return self.currentNetwork
         }
         let kind = Self.networkKind(interfaceName: interfaceName, displayName: interfaceName, wifiSSID: nil)
-        return NetworkIdentity(
+        let identity = NetworkIdentity(
             id: "iface:\(interfaceName)",
             displayName: interfaceName,
             interfaceName: interfaceName,
             kind: kind
         )
+        return self.networkRegistry.observe(identity, at: self.clock.now()).identity
     }
 
     @discardableResult

@@ -195,6 +195,8 @@ public enum TrafficRuleEngine {
 
 public final class TrafficRuleStore {
     public static let networkPlanKey = "net.analytics.rules.v1.networkPlan"
+    public static let networkPlansKey = "net.analytics.rules.v2.networkPlans"
+    public static let allNetworksDefaultPlanID = "all-networks-default"
     public static let applicationRulesKey = "net.analytics.rules.v1.applicationRules"
     public static let includeLocalNetworkKey = "Network_analyticsIncludeLocal"
     public static let notifiedThresholdsKey = "net.analytics.rules.v1.notifiedThresholds"
@@ -205,7 +207,12 @@ public final class TrafficRuleStore {
         self.defaults = defaults
     }
 
+    /// Compatibility accessor for callers that have not selected a concrete network yet.
     public func networkPlan() -> NetworkPlan {
+        let plans = self.allNetworkPlans()
+        if let plan = plans[Self.allNetworksDefaultPlanID] {
+            return plan
+        }
         guard let data = self.defaults.data(forKey: Self.networkPlanKey),
               let plan = try? JSONDecoder().decode(NetworkPlan.self, from: data) else {
             return .default
@@ -213,10 +220,52 @@ public final class TrafficRuleStore {
         return plan
     }
 
+    /// Compatibility save used by the global/default settings surface.
     public func save(networkPlan: NetworkPlan) {
+        guard TrafficRuleEngine.validate(plan: networkPlan) else { return }
         if let data = try? JSONEncoder().encode(networkPlan) {
             self.defaults.set(data, forKey: Self.networkPlanKey)
         }
+        self.save(networkPlan: networkPlan, for: Self.allNetworksDefaultPlanID)
+    }
+
+    public func networkPlan(for networkID: String) -> NetworkPlan {
+        var plans = self.allNetworkPlans()
+        if let plan = plans[networkID] {
+            return plan
+        }
+        if let fallback = plans[Self.allNetworksDefaultPlanID] {
+            plans[networkID] = fallback
+            self.persistNetworkPlans(plans)
+            return fallback
+        }
+        if let data = self.defaults.data(forKey: Self.networkPlanKey),
+           let legacy = try? JSONDecoder().decode(NetworkPlan.self, from: data) {
+            plans[networkID] = legacy
+            self.persistNetworkPlans(plans)
+            return legacy
+        }
+        return .default
+    }
+
+    public func save(networkPlan: NetworkPlan, for networkID: String) {
+        guard !networkID.isEmpty, TrafficRuleEngine.validate(plan: networkPlan) else { return }
+        var plans = self.allNetworkPlans()
+        plans[networkID] = networkPlan
+        self.persistNetworkPlans(plans)
+    }
+
+    public func allNetworkPlans() -> [String: NetworkPlan] {
+        guard let data = self.defaults.data(forKey: Self.networkPlansKey),
+              let plans = try? JSONDecoder().decode([String: NetworkPlan].self, from: data) else {
+            return [:]
+        }
+        return plans
+    }
+
+    private func persistNetworkPlans(_ plans: [String: NetworkPlan]) {
+        guard let data = try? JSONEncoder().encode(plans) else { return }
+        self.defaults.set(data, forKey: Self.networkPlansKey)
     }
 
     public func applicationRules() -> [ApplicationTrafficRule] {

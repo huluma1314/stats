@@ -219,6 +219,7 @@ public struct TrafficQueryPlanner {
 public struct TrafficAnalyticsQuery: Equatable {
     public let range: TrafficRange
     public let networkFilter: NetworkKind?
+    public let networkID: String?
     public let includeLocalNetwork: Bool
     public let applicationSearch: String
     public let selectedInterval: DateInterval?
@@ -228,6 +229,7 @@ public struct TrafficAnalyticsQuery: Equatable {
     public init(
         range: TrafficRange,
         networkFilter: NetworkKind? = nil,
+        networkID: String? = nil,
         includeLocalNetwork: Bool = true,
         applicationSearch: String = "",
         selectedInterval: DateInterval? = nil,
@@ -236,6 +238,7 @@ public struct TrafficAnalyticsQuery: Equatable {
     ) {
         self.range = range
         self.networkFilter = networkFilter
+        self.networkID = networkID
         self.includeLocalNetwork = includeLocalNetwork
         self.applicationSearch = applicationSearch
         self.selectedInterval = selectedInterval
@@ -282,9 +285,15 @@ public final class TrafficAnalyticsEngine {
             ))
         }
 
-        records = self.deduplicate(records)
-        if let kind = query.networkFilter {
-            records = records.filter { $0.sample.network.kind == kind }
+        if let networkID = query.networkID {
+            // A concrete network is already one accounting layer. Do not drop a selected
+            // tunnel merely because a physical sample exists in the same second.
+            records = records.filter { $0.sample.network.id == networkID }
+        } else {
+            records = self.deduplicate(records)
+            if let kind = query.networkFilter {
+                records = records.filter { $0.sample.network.kind == kind }
+            }
         }
         if !query.includeLocalNetwork {
             records = records.filter { $0.sample.network.kind != .other }
@@ -531,15 +540,24 @@ public final class TrafficAnalyticsEngine {
     }
 
     private func billingPeriod(containing date: Date, cycleDay: Int) -> DateInterval {
-        let day = min(max(cycleDay, 1), 28)
-        var components = self.calendar.dateComponents([.year, .month], from: date)
-        components.day = day
-        let thisCycle = self.calendar.date(from: components) ?? self.calendar.startOfDay(for: date)
+        let requestedDay = min(max(cycleDay, 1), 31)
+        let monthAnchor = self.calendar.date(from: self.calendar.dateComponents([.year, .month], from: date))
+            ?? self.calendar.startOfDay(for: date)
+        let thisCycle = self.cycleDate(monthAnchor: monthAnchor, requestedDay: requestedDay)
         if date >= thisCycle {
-            let next = self.calendar.date(byAdding: .month, value: 1, to: thisCycle) ?? thisCycle.addingTimeInterval(30 * 86_400)
-            return DateInterval(start: thisCycle, end: next)
+            let nextMonth = self.calendar.date(byAdding: .month, value: 1, to: monthAnchor)
+                ?? monthAnchor.addingTimeInterval(31 * 86_400)
+            return DateInterval(start: thisCycle, end: self.cycleDate(monthAnchor: nextMonth, requestedDay: requestedDay))
         }
-        let previous = self.calendar.date(byAdding: .month, value: -1, to: thisCycle) ?? thisCycle.addingTimeInterval(-30 * 86_400)
-        return DateInterval(start: previous, end: thisCycle)
+        let previousMonth = self.calendar.date(byAdding: .month, value: -1, to: monthAnchor)
+            ?? monthAnchor.addingTimeInterval(-31 * 86_400)
+        return DateInterval(start: self.cycleDate(monthAnchor: previousMonth, requestedDay: requestedDay), end: thisCycle)
+    }
+
+    private func cycleDate(monthAnchor: Date, requestedDay: Int) -> Date {
+        let availableDays = self.calendar.range(of: .day, in: .month, for: monthAnchor)?.count ?? 28
+        var components = self.calendar.dateComponents([.year, .month], from: monthAnchor)
+        components.day = min(requestedDay, availableDays)
+        return self.calendar.date(from: components) ?? monthAnchor
     }
 }

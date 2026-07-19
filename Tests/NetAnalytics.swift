@@ -2983,6 +2983,130 @@ final class NetAnalyticsTests: XCTestCase {
         _ = coordinator.stop()
     }
 
+
+    func testNetworkRegistryUsesStableWiFiEthernetHotspotAndTunnelIDs() {
+        let defaults = UserDefaults(suiteName: "net-analytics-registry-")!
+        defaults.removePersistentDomain(forName: "net-analytics-registry-")
+        let registry = NetworkRegistry(defaults: defaults)
+        let inputs = [
+            NetworkIdentity(id: "volatile-wifi", displayName: "Home Wi-Fi", interfaceName: "en0", kind: .wifi, ssid: " Home ", bssid: "AA:BB"),
+            NetworkIdentity(id: "volatile-ethernet", displayName: "Ethernet", interfaceName: "en1", kind: .ethernet, hardwareAddress: "AA:BB:CC:DD:EE:FF"),
+            NetworkIdentity(id: "volatile-hotspot", displayName: "iPhone", interfaceName: "bridge0", kind: .hotspot, serviceIdentifier: "iPhone"),
+            NetworkIdentity(id: "volatile-tunnel", displayName: "VPN", interfaceName: "utun4", kind: .tunnel, serviceIdentifier: "work-vpn")
+        ]
+
+        let registered = inputs.map { registry.observe($0, at: Date(timeIntervalSince1970: 100)) }
+        XCTAssertEqual(registered.map(\.identity.id), [
+            "wifi:home",
+            "ethernet:aa:bb:cc:dd:ee:ff",
+            "hotspot:iphone|bridge0",
+            "tunnel:work-vpn"
+        ])
+    }
+
+    func testWiFiRoamingAcrossBSSIDsKeepsOneCanonicalSSIDIdentity() {
+        let suite = "net-analytics-roaming-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let registry = NetworkRegistry(defaults: defaults)
+        let first = registry.observe(
+            NetworkIdentity(id: "first", displayName: "Home", interfaceName: "en0", kind: .wifi, ssid: "Home", bssid: "AA:AA"),
+            at: Date(timeIntervalSince1970: 100)
+        )
+        let second = registry.observe(
+            NetworkIdentity(id: "second", displayName: "Home", interfaceName: "en1", kind: .wifi, ssid: " home ", bssid: "BB:BB"),
+            at: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertEqual(first.identity.id, second.identity.id)
+        XCTAssertEqual(registry.all().count, 1)
+        XCTAssertEqual(Set(registry.all()[0].observedBSSIDs), ["AA:AA", "BB:BB"])
+    }
+
+    func testNetworkAliasSurvivesRediscoveryAndDoesNotChangeStoredSampleID() {
+        let suite = "net-analytics-alias-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let registry = NetworkRegistry(defaults: defaults)
+        let first = registry.observe(
+            NetworkIdentity(id: "volatile", displayName: "Home", interfaceName: "en0", kind: .wifi, ssid: "Home", bssid: "AA"),
+            at: Date(timeIntervalSince1970: 100)
+        )
+        registry.setAlias("Apartment", for: first.identity.id)
+        let restarted = NetworkRegistry(defaults: defaults)
+        let rediscovered = restarted.observe(
+            NetworkIdentity(id: "other-volatile-id", displayName: "Home", interfaceName: "en9", kind: .wifi, ssid: "HOME", bssid: "BB"),
+            at: Date(timeIntervalSince1970: 300)
+        )
+
+        XCTAssertEqual(rediscovered.identity.id, first.identity.id)
+        XCTAssertEqual(restarted.displayName(for: first.identity.id), "Apartment")
+        XCTAssertEqual(rediscovered.identity.id, "wifi:home")
+    }
+
+    func testNetworkPlansAreIndependentPerRegisteredNetwork() {
+        let suite = "net-analytics-plans-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let store = TrafficRuleStore(defaults: defaults)
+        let wifi = NetworkPlan(billingCycleDay: 5, byteLimit: 10, thresholds: [50])
+        let ethernet = NetworkPlan(billingCycleDay: 20, byteLimit: 20, thresholds: [80])
+
+        store.save(networkPlan: wifi, for: "wifi:home")
+        store.save(networkPlan: ethernet, for: "ethernet:aa")
+
+        XCTAssertEqual(store.networkPlan(for: "wifi:home"), wifi)
+        XCTAssertEqual(store.networkPlan(for: "ethernet:aa"), ethernet)
+        XCTAssertEqual(store.allNetworkPlans().count, 2)
+    }
+
+    func testConcreteNetworkFilterSelectsOnlyThatNetwork() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let app = self.identity
+        let home = NetworkIdentity(id: "wifi:home", displayName: "Home", interfaceName: "en0", kind: .wifi)
+        let work = NetworkIdentity(id: "wifi:work", displayName: "Work", interfaceName: "en0", kind: .wifi)
+        XCTAssertSuccess(repository.ingest([
+            TrafficSample(timestamp: now, application: app, network: home, processID: 1, delta: TrafficDelta(download: 10, upload: 1), peakBytesPerSecond: 11),
+            TrafficSample(timestamp: now, application: app, network: work, processID: 1, delta: TrafficDelta(download: 20, upload: 2), peakBytesPerSecond: 22)
+        ]))
+
+        let snapshot = TrafficAnalyticsEngine(repository: repository).snapshot(
+            for: TrafficAnalyticsQuery(range: .today, networkID: "wifi:work", now: now)
+        )
+        XCTAssertEqual(snapshot.total, 22)
+        XCTAssertEqual(snapshot.ranking.first?.download, 20)
+    }
+
+    func testAllNetworksDeduplicatesTunnelAndPhysicalButConcreteFiltersDoNot() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let store = InMemoryTrafficStore()
+        let repository = TrafficHistoryRepository(store: store)
+        let app = self.identity
+        let physical = NetworkIdentity(id: "wifi:home", displayName: "Home", interfaceName: "en0", kind: .wifi)
+        let tunnel = NetworkIdentity(id: "tunnel:work", displayName: "VPN", interfaceName: "utun4", kind: .tunnel)
+        XCTAssertSuccess(repository.ingest([
+            TrafficSample(timestamp: now, application: app, network: physical, processID: 1, delta: TrafficDelta(download: 10, upload: 1), peakBytesPerSecond: 11),
+            TrafficSample(timestamp: now, application: app, network: tunnel, processID: 1, delta: TrafficDelta(download: 10, upload: 1), peakBytesPerSecond: 11)
+        ]))
+        let engine = TrafficAnalyticsEngine(repository: repository)
+
+        let all = engine.snapshot(for: TrafficAnalyticsQuery(range: .today, now: now))
+        let concrete = engine.snapshot(for: TrafficAnalyticsQuery(range: .today, networkID: "tunnel:work", now: now))
+        XCTAssertEqual(all.total, 11)
+        XCTAssertEqual(concrete.total, 11)
+        XCTAssertEqual(concrete.download, 10)
+    }
+
+    func testOverviewUsesTheSelectedNetworksBillingPlan() {
+        let suite = "net-analytics-overview-plan-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let store = TrafficRuleStore(defaults: defaults)
+        store.save(networkPlan: NetworkPlan(billingCycleDay: 3, byteLimit: 100, thresholds: [50]), for: "wifi:home")
+        store.save(networkPlan: NetworkPlan(billingCycleDay: 17, byteLimit: 200, thresholds: [75]), for: "wifi:work")
+
+        XCTAssertEqual(store.networkPlan(for: "wifi:home").billingCycleDay, 3)
+        XCTAssertEqual(store.networkPlan(for: "wifi:work").byteLimit, 200)
+    }
+
     private func waitUntil(timeout: TimeInterval = 1, condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {

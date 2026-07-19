@@ -9,6 +9,8 @@ import Kit
 internal final class TrafficAnalysisView: NSView {
     private let engine: TrafficAnalyticsEngine
     private let repository: TrafficHistoryRepository
+    private let networkRegistry: NetworkRegistry
+    private let ruleStore: TrafficRuleStore
     private var selection = TrafficSelection()
     private var snapshot: TrafficAnalyticsSnapshot?
     private var refreshTimer: Timer?
@@ -33,9 +35,16 @@ internal final class TrafficAnalysisView: NSView {
     private let detail = ApplicationDetailView()
     private let contentStack = FlippedStackView()
 
-    init(engine: TrafficAnalyticsEngine, repository: TrafficHistoryRepository) {
+    init(
+        engine: TrafficAnalyticsEngine,
+        repository: TrafficHistoryRepository,
+        networkRegistry: NetworkRegistry = NetworkRegistry(),
+        ruleStore: TrafficRuleStore = TrafficRuleStore()
+    ) {
         self.engine = engine
         self.repository = repository
+        self.networkRegistry = networkRegistry
+        self.ruleStore = ruleStore
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
         self.build()
@@ -59,10 +68,12 @@ internal final class TrafficAnalysisView: NSView {
         query = TrafficAnalyticsQuery(
             range: query.range,
             networkFilter: query.networkFilter,
-            includeLocalNetwork: TrafficRuleStore().includeLocalNetwork,
+            networkID: query.networkID,
+            includeLocalNetwork: self.ruleStore.includeLocalNetwork,
             applicationSearch: query.applicationSearch,
             selectedInterval: query.selectedInterval,
-            billingCycleDay: TrafficRuleStore().networkPlan().billingCycleDay,
+            billingCycleDay: query.networkID.map { self.ruleStore.networkPlan(for: $0).billingCycleDay }
+                ?? self.ruleStore.networkPlan().billingCycleDay,
             now: Date()
         )
         self.snapshot = self.engine.snapshot(for: query)
@@ -109,11 +120,7 @@ internal final class TrafficAnalysisView: NSView {
         self.refreshControl.target = self
         self.refreshControl.action = #selector(self.controlsChanged)
 
-        self.networkControl.removeAllItems()
-        self.networkControl.addItem(withTitle: localizedString("All networks"))
-        for kind in NetworkKind.allCases {
-            self.networkControl.addItem(withTitle: kind.rawValue.capitalized)
-        }
+        self.reloadNetworkMenu()
         self.networkControl.target = self
         self.networkControl.action = #selector(self.controlsChanged)
 
@@ -249,6 +256,22 @@ internal final class TrafficAnalysisView: NSView {
         return box
     }
 
+    private func reloadNetworkMenu() {
+        self.networkControl.removeAllItems()
+        self.networkControl.addItem(withTitle: localizedString("All networks"))
+        for registered in self.networkRegistry.all() {
+            self.networkControl.addItem(withTitle: self.networkRegistry.displayName(for: registered.identity.id))
+            self.networkControl.lastItem?.representedObject = registered.identity.id
+            self.networkControl.lastItem?.toolTip = registered.identity.id
+        }
+        if let networkID = self.selection.networkID,
+           let index = self.networkControl.itemArray.firstIndex(where: { $0.representedObject as? String == networkID }) {
+            self.networkControl.selectItem(at: index)
+        } else {
+            self.networkControl.selectItem(at: 0)
+        }
+    }
+
     @objc private func controlsChanged() {
         let ranges = TrafficRange.allCases
         if self.rangeControl.selectedSegment >= 0, self.rangeControl.selectedSegment < ranges.count {
@@ -261,13 +284,11 @@ internal final class TrafficAnalysisView: NSView {
             self.selection.refreshMode = refreshModes[self.refreshControl.indexOfSelectedItem]
         }
         if self.networkControl.indexOfSelectedItem <= 0 {
+            self.selection.networkID = nil
             self.selection.networkFilter = nil
-        } else {
-            let kinds = NetworkKind.allCases
-            let index = self.networkControl.indexOfSelectedItem - 1
-            if index >= 0, index < kinds.count {
-                self.selection.networkFilter = kinds[index]
-            }
+        } else if let id = self.networkControl.selectedItem?.representedObject as? String {
+            self.selection.networkID = id
+            self.selection.networkFilter = nil
         }
         self.lineChart.isHidden = self.selection.chartMode != .line
         self.heatmap.isHidden = self.selection.chartMode != .heatmap

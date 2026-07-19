@@ -53,6 +53,7 @@ public struct TrafficSelection: Equatable {
     public var range: TrafficRange
     public var chartMode: TrafficChartMode
     public var networkFilter: NetworkKind?
+    public var networkID: String?
     public var refreshMode: TrafficRefreshMode
     public var search: String
     public var selectedInterval: DateInterval?
@@ -61,6 +62,7 @@ public struct TrafficSelection: Equatable {
         range: TrafficRange = .tenMinutes,
         chartMode: TrafficChartMode = .line,
         networkFilter: NetworkKind? = nil,
+        networkID: String? = nil,
         refreshMode: TrafficRefreshMode = .tenSeconds,
         search: String = "",
         selectedInterval: DateInterval? = nil
@@ -68,6 +70,7 @@ public struct TrafficSelection: Equatable {
         self.range = range
         self.chartMode = chartMode
         self.networkFilter = networkFilter
+        self.networkID = networkID
         self.refreshMode = refreshMode
         self.search = search
         self.selectedInterval = selectedInterval
@@ -85,6 +88,7 @@ public struct TrafficSelection: Equatable {
         TrafficAnalyticsQuery(
             range: self.range,
             networkFilter: self.networkFilter,
+            networkID: self.networkID,
             includeLocalNetwork: true,
             applicationSearch: self.search,
             selectedInterval: self.selectedInterval,

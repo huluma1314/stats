@@ -81,12 +81,33 @@ public struct NetworkIdentity: Codable, Equatable, Hashable {
     public let displayName: String
     public let interfaceName: String
     public let kind: NetworkKind
+    /// The logical Wi-Fi network name, when the platform provides it.
+    public let ssid: String?
+    /// The currently observed access-point identifier. It is metadata, never part of a Wi-Fi ID.
+    public let bssid: String?
+    /// A stable hardware address for physical interfaces, when available.
+    public let hardwareAddress: String?
+    /// A stable service/VPN/device identifier, when available.
+    public let serviceIdentifier: String?
 
-    public init(id: String, displayName: String, interfaceName: String, kind: NetworkKind) {
+    public init(
+        id: String,
+        displayName: String,
+        interfaceName: String,
+        kind: NetworkKind,
+        ssid: String? = nil,
+        bssid: String? = nil,
+        hardwareAddress: String? = nil,
+        serviceIdentifier: String? = nil
+    ) {
         self.id = id
         self.displayName = displayName
         self.interfaceName = interfaceName
         self.kind = kind
+        self.ssid = ssid
+        self.bssid = bssid
+        self.hardwareAddress = hardwareAddress
+        self.serviceIdentifier = serviceIdentifier
     }
 }
 
