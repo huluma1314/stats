@@ -33,3 +33,12 @@ public enum NetworkPreviewPage: String, CaseIterable {
         }
     }
 }
+
+internal extension NetworkAnalyticsWorkspacePage {
+    static let storageKey = "net.analytics.workspace.page.v1"
+    static let legacyStorageKey = "NetworkAnalyticsWorkspace.selectedPage"
+
+    init(storedRawValue: String?) {
+        self = storedRawValue.flatMap(Self.init(rawValue:)) ?? .overview
+    }
+}

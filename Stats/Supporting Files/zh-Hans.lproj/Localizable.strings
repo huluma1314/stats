@@ -623,3 +623,9 @@
 "Sustained upload alert" = "持续上传告警";
 "Traffic spike alert" = "流量突增告警";
 "Connectivity alert" = "网络连通性告警";
+"Show overview analytics" = "显示概览分析";
+"Show history analytics" = "显示历史分析";
+"Show live analytics" = "显示实时分析";
+"Show traffic alerts" = "显示流量警报";
+"Refresh current analytics page" = "刷新当前分析页";
+"Open network settings" = "打开网络设置";

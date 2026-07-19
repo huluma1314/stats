@@ -169,17 +169,126 @@ final class NetAnalyticsTests: XCTestCase {
         } ?? true)
     }
 
-    private func makeWorkspaceController() -> NetworkAnalyticsWindowController {
-        let suiteName = "NetAnalyticsTests.workspace.\(UUID().uuidString)"
+    func testAnalyticsWorkspaceHeaderUsesStableIdentifiersAndPageOrder() throws {
+        let controller = self.makeWorkspaceController()
+        let window = controller.show()
+        defer { window.close() }
+        let workspace = try XCTUnwrap(window.contentView as? NetworkAnalyticsWorkspaceView)
+        let buttons = self.descendants(of: workspace).compactMap { $0 as? NSButton }
+        let identifiers = buttons.compactMap { $0.identifier?.rawValue }
+
+        XCTAssertEqual(
+            identifiers.filter { $0.hasPrefix("analytics-page-") },
+            ["analytics-page-overview", "analytics-page-history", "analytics-page-live"]
+        )
+        XCTAssertTrue(identifiers.contains("analytics-alerts"))
+        XCTAssertTrue(identifiers.contains("analytics-refresh"))
+        XCTAssertTrue(identifiers.contains("analytics-settings"))
+    }
+
+    func testAnalyticsWorkspaceHeaderUsesRequiredSymbolsAndLocalizedDescriptions() throws {
+        let controller = self.makeWorkspaceController()
+        let window = controller.show()
+        defer { window.close() }
+        let workspace = try XCTUnwrap(window.contentView as? NetworkAnalyticsWorkspaceView)
+        let buttons = self.descendants(of: workspace).compactMap { $0 as? NSButton }
+        let identified = Dictionary(uniqueKeysWithValues: buttons.compactMap { button in
+            button.identifier.map { ($0.rawValue, button) }
+        })
+
+        for identifier in [
+            "analytics-page-overview",
+            "analytics-page-history",
+            "analytics-page-live"
+        ] {
+            let button = try XCTUnwrap(identified[identifier])
+            XCTAssertNotNil(button.image)
+            XCTAssertFalse(button.toolTip?.isEmpty ?? true)
+            XCTAssertFalse(button.image?.accessibilityDescription?.isEmpty ?? true)
+        }
+        for identifier in ["analytics-alerts", "analytics-refresh", "analytics-settings"] {
+            let button = try XCTUnwrap(identified[identifier])
+            XCTAssertFalse(button.toolTip?.isEmpty ?? true)
+            XCTAssertFalse(button.image?.accessibilityDescription?.isEmpty ?? true)
+        }
+    }
+
+    func testAnalyticsWorkspacePageButtonsSwitchOneFullWidthHostPage() throws {
+        let controller = self.makeWorkspaceController()
+        let window = controller.show()
+        defer { window.close() }
+        let workspace = try XCTUnwrap(window.contentView as? NetworkAnalyticsWorkspaceView)
+        let buttons = self.descendants(of: workspace).compactMap { $0 as? NSButton }
+
+        XCTAssertEqual(workspace.visiblePage, .overview)
+        for page in NetworkAnalyticsWorkspacePage.allCases {
+            let button = try XCTUnwrap(buttons.first { $0.identifier?.rawValue == "analytics-page-\(page.rawValue)" })
+            button.performClick(nil)
+            XCTAssertEqual(controller.selectedPage, page)
+            XCTAssertEqual(workspace.visiblePage, page)
+            XCTAssertEqual(workspace.hostedPageCount, 1)
+            XCTAssertTrue(workspace.hostedPageFillsHost)
+        }
+    }
+
+    func testAnalyticsWorkspaceUsesVersionedPageKeyAndMigratesLegacyValue() {
+        let suiteName = "NetAnalyticsTests.workspace.migration.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        self.addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("live", forKey: "NetworkAnalyticsWorkspace.selectedPage")
+
+        let controller = self.makeWorkspaceController(defaults: defaults)
+
+        XCTAssertEqual(controller.selectedPage, .live)
+        XCTAssertEqual(defaults.string(forKey: "net.analytics.workspace.page.v1"), "live")
+        XCTAssertNil(defaults.object(forKey: "NetworkAnalyticsWorkspace.selectedPage"))
+    }
+
+    func testAnalyticsWorkspaceInvalidVersionedPageFallsBackToOverview() {
+        let suiteName = "NetAnalyticsTests.workspace.invalid.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("invalid", forKey: "net.analytics.workspace.page.v1")
+
+        let controller = self.makeWorkspaceController(defaults: defaults)
+
+        XCTAssertEqual(controller.selectedPage, .overview)
+        XCTAssertEqual(defaults.string(forKey: "net.analytics.workspace.page.v1"), "overview")
+    }
+
+    func testAnalyticsWorkspaceSettingsButtonInvokesInjectedClosure() throws {
+        var invocationCount = 0
+        let controller = self.makeWorkspaceController(openSettings: { invocationCount += 1 })
+        let window = controller.show()
+        defer { window.close() }
+        let workspace = try XCTUnwrap(window.contentView as? NetworkAnalyticsWorkspaceView)
+        let button = try XCTUnwrap(self.descendants(of: workspace).compactMap { $0 as? NSButton }.first {
+            $0.identifier?.rawValue == "analytics-settings"
+        })
+
+        button.performClick(nil)
+
+        XCTAssertEqual(invocationCount, 1)
+    }
+
+    private func makeWorkspaceController(
+        defaults: UserDefaults? = nil,
+        openSettings: @escaping () -> Void = {}
+    ) -> NetworkAnalyticsWindowController {
+        let effectiveDefaults: UserDefaults
+        if let suppliedDefaults = defaults {
+            effectiveDefaults = suppliedDefaults
+        } else {
+            let suiteName = "NetAnalyticsTests.workspace.\(UUID().uuidString)"
+            effectiveDefaults = UserDefaults(suiteName: suiteName)!
+            self.addTeardownBlock { effectiveDefaults.removePersistentDomain(forName: suiteName) }
+        }
         return NetworkAnalyticsWindowController(
             repository: TrafficHistoryRepository(store: InMemoryTrafficStore()),
-            ruleStore: TrafficRuleStore(defaults: defaults),
-            networkRegistry: NetworkRegistry(defaults: defaults),
-            defaults: defaults,
-            openSettings: {}
+            ruleStore: TrafficRuleStore(defaults: effectiveDefaults),
+            networkRegistry: NetworkRegistry(defaults: effectiveDefaults),
+            defaults: effectiveDefaults,
+            openSettings: openSettings
         )
     }
 

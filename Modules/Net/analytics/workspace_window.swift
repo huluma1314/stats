@@ -10,7 +10,6 @@ internal final class NetworkAnalyticsWindowController: NSWindowController {
     static let frameAutosaveName = "NetworkAnalyticsWorkspaceWindow"
     static let defaultContentSize = NSSize(width: 1080, height: 760)
     static let minimumContentSize = NSSize(width: 720, height: 480)
-    private static let selectedPageKey = "NetworkAnalyticsWorkspace.selectedPage"
 
     private let repository: TrafficHistoryRepository
     private let ruleStore: TrafficRuleStore
@@ -41,8 +40,15 @@ internal final class NetworkAnalyticsWindowController: NSWindowController {
         self.defaults = defaults
         self.analyticsEngine = analyticsEngine ?? TrafficAnalyticsEngine(repository: repository)
         self.openSettings = openSettings
-        self.selectedPage = defaults.string(forKey: Self.selectedPageKey)
-            .flatMap(NetworkAnalyticsWorkspacePage.init(rawValue:)) ?? .overview
+        let storedPage = defaults.string(forKey: NetworkAnalyticsWorkspacePage.storageKey)
+        let legacyPage = defaults.string(forKey: NetworkAnalyticsWorkspacePage.legacyStorageKey)
+        self.selectedPage = NetworkAnalyticsWorkspacePage(storedRawValue: storedPage ?? legacyPage)
+        if storedPage.flatMap(NetworkAnalyticsWorkspacePage.init(rawValue:)) == nil {
+            defaults.set(self.selectedPage.rawValue, forKey: NetworkAnalyticsWorkspacePage.storageKey)
+        }
+        if storedPage == nil, legacyPage != nil {
+            defaults.removeObject(forKey: NetworkAnalyticsWorkspacePage.legacyStorageKey)
+        }
         super.init(window: nil)
     }
 
@@ -62,7 +68,7 @@ internal final class NetworkAnalyticsWindowController: NSWindowController {
     func select(_ page: NetworkAnalyticsWorkspacePage) {
         dispatchPrecondition(condition: .onQueue(.main))
         self.selectedPage = page
-        self.defaults.set(page.rawValue, forKey: Self.selectedPageKey)
+        self.defaults.set(page.rawValue, forKey: NetworkAnalyticsWorkspacePage.storageKey)
         self.workspaceView?.select(page)
     }
 

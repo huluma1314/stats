@@ -623,3 +623,9 @@
 "Sustained upload alert" = "Sustained upload alert";
 "Traffic spike alert" = "Traffic spike alert";
 "Connectivity alert" = "Connectivity alert";
+"Show overview analytics" = "Show overview analytics";
+"Show history analytics" = "Show history analytics";
+"Show live analytics" = "Show live analytics";
+"Show traffic alerts" = "Show traffic alerts";
+"Refresh current analytics page" = "Refresh current analytics page";
+"Open network settings" = "Open network settings";
