@@ -870,6 +870,22 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertEqual(preview.instantiatedAnalyticsPageCount, 1)
     }
 
+    func testNetworkPreviewLoadsCurrentPageInsidePlainSettingsContainer() {
+        let previousPage = Store.shared.string(
+            key: NetworkPreviewPage.storageKey,
+            defaultValue: NetworkPreviewPage.realtime.rawValue
+        )
+        Store.shared.set(key: NetworkPreviewPage.storageKey, value: NetworkPreviewPage.overview.rawValue)
+        defer { Store.shared.set(key: NetworkPreviewPage.storageKey, value: previousPage) }
+
+        let preview = Preview(.network)
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1_200, height: 700))
+        container.addSubview(preview)
+        container.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(preview.instantiatedAnalyticsPageCount, 1)
+    }
+
     func testNetworkPreviewAnalysisPageStretchesItsContent() {
         let previousPage = Store.shared.string(
             key: NetworkPreviewPage.storageKey,

@@ -139,6 +139,9 @@ internal class Preview: PreviewWrapper {
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
 
+        if self.superview != nil, self.pageHost?.arrangedSubviews.isEmpty == true {
+            self.applyPage(self.currentPage)
+        }
         self.outerWidthConstraint?.isActive = false
         self.outerWidthConstraint = nil
         guard let stack = self.superview as? NSStackView else { return }
@@ -147,9 +150,6 @@ internal class Preview: PreviewWrapper {
         let constraint = self.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -horizontalInsets)
         constraint.isActive = true
         self.outerWidthConstraint = constraint
-        if self.pageHost?.arrangedSubviews.isEmpty == true {
-            self.applyPage(self.currentPage)
-        }
     }
     
     private func loadColors() {
