@@ -532,6 +532,17 @@ public class SystemKit {
         return (eFreq, pFreq, sFreq)
     }
     
+    internal static func shouldInspectDiskContainer(_ disk: [String: Any]) -> Bool {
+        guard let contentType = disk["Content"] as? String,
+              contentType == "Apple_APFS_Container" || contentType == "Apple_CoreStorage" else {
+            return false
+        }
+        guard let volumes = disk["APFSVolumes"] as? [[String: Any]] else {
+            return false
+        }
+        return volumes.contains { ($0["MountPoint"] as? String) == "/" }
+    }
+
     private func getDiskInfo() -> [disk_s]? {
         var bootableDisks: [disk_s] = []
         
@@ -567,7 +578,7 @@ public class SystemKit {
                         }
                     }
                     
-                    if let contentType = disk["Content"] as? String, contentType == "Apple_APFS_Container" || contentType == "Apple_CoreStorage" {
+                    if Self.shouldInspectDiskContainer(disk) {
                         if let deviceIdentifier = disk["DeviceIdentifier"] as? String,
                            let infoOutput = process(path: "/usr/sbin/diskutil", arguments: ["info", "-plist", deviceIdentifier]),
                            let infoData = infoOutput.data(using: .utf8),

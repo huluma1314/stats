@@ -231,6 +231,21 @@ final class NetAnalyticsTests: XCTestCase {
         }
     }
 
+    func testAnalyticsWorkspaceLazilyBuildsPagesAsTheyAreSelected() throws {
+        let controller = self.makeWorkspaceController()
+        let window = controller.show()
+        defer { window.close() }
+        let workspace = try XCTUnwrap(window.contentView as? NetworkAnalyticsWorkspaceView)
+
+        XCTAssertEqual(workspace.instantiatedPageCount, 1)
+        controller.select(.history)
+        XCTAssertEqual(workspace.instantiatedPageCount, 2)
+        controller.select(.overview)
+        XCTAssertEqual(workspace.instantiatedPageCount, 2)
+        controller.select(.live)
+        XCTAssertEqual(workspace.instantiatedPageCount, 3)
+    }
+
     func testAnalyticsWorkspaceUsesVersionedPageKeyAndMigratesLegacyValue() {
         let suiteName = "NetAnalyticsTests.workspace.migration.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -838,6 +853,23 @@ final class NetAnalyticsTests: XCTestCase {
         XCTAssertGreaterThan(detail?.frame.width ?? 0, 1_000)
     }
 
+    func testNetworkPreviewDefersAnalyticsPagesUntilAttached() {
+        let previousPage = Store.shared.string(
+            key: NetworkPreviewPage.storageKey,
+            defaultValue: NetworkPreviewPage.realtime.rawValue
+        )
+        Store.shared.set(key: NetworkPreviewPage.storageKey, value: NetworkPreviewPage.overview.rawValue)
+        defer { Store.shared.set(key: NetworkPreviewPage.storageKey, value: previousPage) }
+
+        let preview = Preview(.network)
+        XCTAssertEqual(preview.instantiatedAnalyticsPageCount, 0)
+
+        let wrapper = ScrollableStackView(frame: NSRect(x: 0, y: 0, width: 1_200, height: 700))
+        wrapper.stackView.addArrangedSubview(preview)
+        wrapper.layoutSubtreeIfNeeded()
+        XCTAssertEqual(preview.instantiatedAnalyticsPageCount, 1)
+    }
+
     func testNetworkPreviewAnalysisPageStretchesItsContent() {
         let previousPage = Store.shared.string(
             key: NetworkPreviewPage.storageKey,
@@ -936,6 +968,9 @@ final class NetAnalyticsTests: XCTestCase {
         defer { Store.shared.set(key: NetworkPreviewPage.storageKey, value: previousPage) }
 
         let preview = Preview(.network)
+        let wrapper = ScrollableStackView(frame: NSRect(x: 0, y: 0, width: 1_200, height: 700))
+        wrapper.stackView.addArrangedSubview(preview)
+        wrapper.layoutSubtreeIfNeeded()
         let identifiers = Set(self.descendants(of: preview).compactMap { $0.identifier?.rawValue })
 
         XCTAssertTrue(identifiers.contains("overview-anomaly-status"))

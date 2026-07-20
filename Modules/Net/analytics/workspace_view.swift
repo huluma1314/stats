@@ -39,8 +39,10 @@ internal enum NetworkAnalyticsWorkspacePage: String, CaseIterable {
 internal final class NetworkAnalyticsWorkspaceView: NSView {
     private let engine: TrafficAnalyticsEngine
     private let repository: TrafficHistoryRepository
+    private let ruleStore: TrafficRuleStore
+    private let networkRegistry: NetworkRegistry
     private let pageHost = NSView()
-    private let pages: [NetworkAnalyticsWorkspacePage: NSView]
+    private var pages: [NetworkAnalyticsWorkspacePage: NSView] = [:]
     private var pageButtons: [NetworkAnalyticsWorkspacePage: NSButton] = [:]
     private var appearanceContainers: [NSView] = []
     private var hostedPage: NSView?
@@ -49,6 +51,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
     var repositoryIdentity: ObjectIdentifier { ObjectIdentifier(self.repository) }
     var engineIdentity: ObjectIdentifier { ObjectIdentifier(self.engine) }
     var hostedPageCount: Int { self.pageHost.subviews.count }
+    var instantiatedPageCount: Int { self.pages.count }
     var hostedPageFillsHost: Bool {
         guard let hostedPage else { return false }
         return self.pageHost.constraints.filter {
@@ -68,17 +71,9 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
         dispatchPrecondition(condition: .onQueue(.main))
         self.engine = engine
         self.repository = repository
+        self.ruleStore = ruleStore
+        self.networkRegistry = networkRegistry
         self.onSelect = onSelect
-        self.pages = [
-            .overview: TrafficOverviewView(engine: engine, planStore: ruleStore, networkRegistry: networkRegistry),
-            .history: TrafficAnalysisView(
-                engine: engine,
-                repository: repository,
-                networkRegistry: networkRegistry,
-                ruleStore: ruleStore
-            ),
-            .live: LiveTrafficView(engine: engine)
-        ]
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
         self.wantsLayer = true
@@ -108,7 +103,7 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
 
     func select(_ page: NetworkAnalyticsWorkspacePage) {
         dispatchPrecondition(condition: .onQueue(.main))
-        guard let view = self.pages[page] else { return }
+        let view = self.pageView(for: page)
         self.pageButtons.forEach { $0.value.state = $0.key == page ? .on : .off }
 
         if self.hostedPage !== view {
@@ -125,6 +120,30 @@ internal final class NetworkAnalyticsWorkspaceView: NSView {
             ])
         }
         self.reload(page)
+    }
+
+    private func pageView(for page: NetworkAnalyticsWorkspacePage) -> NSView {
+        if let pageView = self.pages[page] { return pageView }
+        let pageView: NSView
+        switch page {
+        case .overview:
+            pageView = TrafficOverviewView(
+                engine: self.engine,
+                planStore: self.ruleStore,
+                networkRegistry: self.networkRegistry
+            )
+        case .history:
+            pageView = TrafficAnalysisView(
+                engine: self.engine,
+                repository: self.repository,
+                networkRegistry: self.networkRegistry,
+                ruleStore: self.ruleStore
+            )
+        case .live:
+            pageView = LiveTrafficView(engine: self.engine)
+        }
+        self.pages[page] = pageView
+        return pageView
     }
 
     private func build(openSettings: @escaping () -> Void) {

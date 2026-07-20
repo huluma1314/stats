@@ -10,9 +10,27 @@
 //
 
 import XCTest
-import Kit
+@testable import Kit
 
 class KitTests: XCTestCase {
+    func testSystemKitDoesNotInspectMountedExternalAPFSContainersForBootStatus() {
+        let external = [
+            "Content": "Apple_APFS_Container",
+            "DeviceIdentifier": "disk7",
+            "OSInternal": false,
+            "APFSVolumes": [["MountPoint": "/Volumes/MacSSD"]]
+        ] as [String: Any]
+        let startup = [
+            "Content": "Apple_APFS_Container",
+            "DeviceIdentifier": "disk3",
+            "OSInternal": false,
+            "APFSVolumes": [["MountPoint": "/"]]
+        ] as [String: Any]
+
+        XCTAssertFalse(SystemKit.shouldInspectDiskContainer(external))
+        XCTAssertTrue(SystemKit.shouldInspectDiskContainer(startup))
+    }
+
     func testIsNewestVersion_release() throws {
         XCTAssertFalse(isNewestVersion(currentVersion: "v2.11.0", latestVersion: "v2.11.0"))
         XCTAssertTrue(isNewestVersion(currentVersion: "v2.11.0", latestVersion: "v2.11.1"))

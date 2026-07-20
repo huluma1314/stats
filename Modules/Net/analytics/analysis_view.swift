@@ -63,8 +63,6 @@ internal final class TrafficAnalysisView: NSView {
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
         self.build()
-        self.reload()
-        self.scheduleRefresh()
     }
 
     required init?(coder: NSCoder) {
@@ -73,6 +71,14 @@ internal final class TrafficAnalysisView: NSView {
 
     deinit {
         self.refreshTimer?.invalidate()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        self.refreshTimer?.invalidate()
+        self.refreshTimer = nil
+        guard self.window != nil else { return }
+        self.scheduleRefresh()
     }
 
     func reload(selection: TrafficSelection? = nil) {
@@ -757,7 +763,6 @@ internal final class LiveTrafficView: NSView {
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
         self.build()
-        self.reload()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -770,7 +775,6 @@ internal final class LiveTrafficView: NSView {
         self.refreshTimer = nil
         guard self.window != nil else { return }
         self.refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.reload() }
-        self.reload()
     }
 
     override func viewDidChangeEffectiveAppearance() {

@@ -66,6 +66,9 @@ internal class Preview: PreviewWrapper {
     private let analyticsEngine: TrafficAnalyticsEngine
     private let ruleStore: TrafficRuleStore
     var openAnalyticsCallback: () -> Void = {}
+    var instantiatedAnalyticsPageCount: Int {
+        [self.realtimeContainer, self.analysisContainer, self.overviewContainer].compactMap { $0 }.count
+    }
     private var currentPage: NetworkPreviewPage = NetworkPreviewPage(
         storedRawValue: Store.shared.string(key: NetworkPreviewPage.storageKey, defaultValue: NetworkPreviewPage.realtime.rawValue)
     )
@@ -115,55 +118,6 @@ internal class Preview: PreviewWrapper {
         let selector = self.pageSelector()
         self.addArrangedSubview(selector)
 
-        let realtime = NSStackView()
-        realtime.orientation = .vertical
-        realtime.alignment = .width
-        realtime.spacing = self.spacing
-        realtime.translatesAutoresizingMaskIntoConstraints = false
-        self.realtimeContainer = realtime
-
-        let liveTraffic = LiveTrafficView(engine: self.analyticsEngine)
-        self.liveTrafficView = liveTraffic
-        realtime.addArrangedSubview(liveTraffic)
-        liveTraffic.widthAnchor.constraint(equalTo: realtime.widthAnchor).isActive = true
-
-        realtime.addArrangedSubview(PreferencesSection([self.usageView()]))
-        realtime.addArrangedSubview(PreferencesSection([self.historyView()]))
-        realtime.addArrangedSubview(PreferencesSection(title: localizedString("Connectivity history"), [self.connectivityView()]))
-
-        let splitView = NSStackView()
-        splitView.orientation = .horizontal
-        splitView.distribution = .fillEqually
-        splitView.alignment = .top
-        splitView.addArrangedSubview(PreferencesSection(title: localizedString("Details"), [self.detailsView()]))
-        splitView.addArrangedSubview(PreferencesSection(title: localizedString("Interface"), [self.interfaceView()]))
-
-        realtime.addArrangedSubview(splitView)
-        realtime.addArrangedSubview(PreferencesSection(title: localizedString("Address"), [self.addressesView()]))
-
-        let analysisHost = NSStackView()
-        analysisHost.orientation = .vertical
-        analysisHost.alignment = .width
-        analysisHost.distribution = .fill
-        analysisHost.translatesAutoresizingMaskIntoConstraints = false
-        let analysis = TrafficAnalysisView(engine: self.analyticsEngine, repository: self.analyticsRepository)
-        self.analysisView = analysis
-        analysisHost.addArrangedSubview(analysis)
-        analysis.widthAnchor.constraint(equalTo: analysisHost.widthAnchor).isActive = true
-
-        let overviewHost = NSStackView()
-        overviewHost.orientation = .vertical
-        overviewHost.alignment = .width
-        overviewHost.distribution = .fill
-        overviewHost.translatesAutoresizingMaskIntoConstraints = false
-        let overview = TrafficOverviewView(engine: self.analyticsEngine, planStore: self.ruleStore)
-        self.overviewView = overview
-        overviewHost.addArrangedSubview(overview)
-        overview.widthAnchor.constraint(equalTo: overviewHost.widthAnchor).isActive = true
-
-        self.analysisContainer = analysisHost
-        self.overviewContainer = overviewHost
-
         let pageHost = FlippedStackView()
         pageHost.orientation = .vertical
         pageHost.alignment = .width
@@ -176,7 +130,6 @@ internal class Preview: PreviewWrapper {
             selector.widthAnchor.constraint(equalTo: self.widthAnchor),
             pageHost.widthAnchor.constraint(equalTo: self.widthAnchor)
         ])
-        self.applyPage(self.currentPage)
     }
     
     required init?(coder: NSCoder) {
@@ -194,6 +147,9 @@ internal class Preview: PreviewWrapper {
         let constraint = self.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -horizontalInsets)
         constraint.isActive = true
         self.outerWidthConstraint = constraint
+        if self.pageHost?.arrangedSubviews.isEmpty == true {
+            self.applyPage(self.currentPage)
+        }
     }
     
     private func loadColors() {
@@ -256,13 +212,8 @@ internal class Preview: PreviewWrapper {
         self.currentPage = page
         Store.shared.set(key: NetworkPreviewPage.storageKey, value: page.rawValue)
 
-        let target: NSView?
-        switch page {
-        case .realtime: target = self.realtimeContainer
-        case .analysis: target = self.analysisContainer
-        case .overview: target = self.overviewContainer
-        }
-        if let host = self.pageHost, let target {
+        let target = self.pageView(for: page)
+        if let host = self.pageHost {
             self.pageWidthConstraint?.isActive = false
             host.arrangedSubviews.forEach {
                 host.removeArrangedSubview($0)
@@ -281,6 +232,65 @@ internal class Preview: PreviewWrapper {
         }
     }
     
+    private func pageView(for page: NetworkPreviewPage) -> NSView {
+        switch page {
+        case .realtime:
+            if let realtimeContainer = self.realtimeContainer { return realtimeContainer }
+            let realtime = NSStackView()
+            realtime.orientation = .vertical
+            realtime.alignment = .width
+            realtime.spacing = self.spacing
+            realtime.translatesAutoresizingMaskIntoConstraints = false
+
+            let liveTraffic = LiveTrafficView(engine: self.analyticsEngine)
+            self.liveTrafficView = liveTraffic
+            realtime.addArrangedSubview(liveTraffic)
+            liveTraffic.widthAnchor.constraint(equalTo: realtime.widthAnchor).isActive = true
+            realtime.addArrangedSubview(PreferencesSection([self.usageView()]))
+            realtime.addArrangedSubview(PreferencesSection([self.historyView()]))
+            realtime.addArrangedSubview(PreferencesSection(title: localizedString("Connectivity history"), [self.connectivityView()]))
+
+            let splitView = NSStackView()
+            splitView.orientation = .horizontal
+            splitView.distribution = .fillEqually
+            splitView.alignment = .top
+            splitView.addArrangedSubview(PreferencesSection(title: localizedString("Details"), [self.detailsView()]))
+            splitView.addArrangedSubview(PreferencesSection(title: localizedString("Interface"), [self.interfaceView()]))
+            realtime.addArrangedSubview(splitView)
+            realtime.addArrangedSubview(PreferencesSection(title: localizedString("Address"), [self.addressesView()]))
+            self.realtimeContainer = realtime
+            return realtime
+
+        case .analysis:
+            if let analysisContainer = self.analysisContainer { return analysisContainer }
+            let host = NSStackView()
+            host.orientation = .vertical
+            host.alignment = .width
+            host.distribution = .fill
+            host.translatesAutoresizingMaskIntoConstraints = false
+            let analysis = TrafficAnalysisView(engine: self.analyticsEngine, repository: self.analyticsRepository)
+            self.analysisView = analysis
+            host.addArrangedSubview(analysis)
+            analysis.widthAnchor.constraint(equalTo: host.widthAnchor).isActive = true
+            self.analysisContainer = host
+            return host
+
+        case .overview:
+            if let overviewContainer = self.overviewContainer { return overviewContainer }
+            let host = NSStackView()
+            host.orientation = .vertical
+            host.alignment = .width
+            host.distribution = .fill
+            host.translatesAutoresizingMaskIntoConstraints = false
+            let overview = TrafficOverviewView(engine: self.analyticsEngine, planStore: self.ruleStore)
+            self.overviewView = overview
+            host.addArrangedSubview(overview)
+            overview.widthAnchor.constraint(equalTo: host.widthAnchor).isActive = true
+            self.overviewContainer = host
+            return host
+        }
+    }
+
     private func usageView() -> NSView {
         let view = NSStackView()
         view.distribution = .fillEqually
