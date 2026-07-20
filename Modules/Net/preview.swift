@@ -285,7 +285,10 @@ internal class Preview: PreviewWrapper {
             let overview = TrafficOverviewView(engine: self.analyticsEngine, planStore: self.ruleStore)
             self.overviewView = overview
             host.addArrangedSubview(overview)
-            overview.widthAnchor.constraint(equalTo: host.widthAnchor).isActive = true
+            NSLayoutConstraint.activate([
+                overview.widthAnchor.constraint(equalTo: host.widthAnchor),
+                overview.heightAnchor.constraint(greaterThanOrEqualToConstant: 643)
+            ])
             self.overviewContainer = host
             return host
         }

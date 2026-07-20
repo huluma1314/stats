@@ -884,6 +884,7 @@ final class NetAnalyticsTests: XCTestCase {
         container.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(preview.instantiatedAnalyticsPageCount, 1)
+        XCTAssertGreaterThan(preview.fittingSize.height, 600)
     }
 
     func testNetworkPreviewAnalysisPageStretchesItsContent() {
